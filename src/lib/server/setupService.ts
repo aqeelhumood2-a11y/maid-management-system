@@ -4,19 +4,23 @@ import { BAHRAIN_TZ } from "../date";
 import { ServiceError } from "./errors";
 
 /**
- * One-time bootstrap for the very first manager account, invoked
- * automatically from src/instrumentation.ts when a server instance starts —
- * an alternative to running scripts/bootstrap-manager.ts from a terminal.
+ * One-time bootstrap/reconciliation for the designated first manager account
+ * (FIRST_MANAGER_EMAIL), invoked automatically from src/instrumentation.ts
+ * and src/proxy.ts whenever a server instance starts or handles a request.
  * Everything here runs server-side under the Admin SDK; the browser never
  * sees Firebase Admin credentials or the bootstrap password.
  *
  * Safety model: a dedicated settings/setupState document is the permanent
- * lock. It is claimed inside a Firestore transaction that also checks for
- * any already-existing active manager, so two concurrent server startups
- * (or a run after a manager was created some other way) can never both
- * succeed, and once completed the lock is never released. There is no
- * separate secret gate — "no manager exists yet" is the entire precondition,
- * by design, so this requires no extra environment variable to configure.
+ * lock, claimed inside a Firestore transaction so concurrent attempts can
+ * never both win. Crucially, the lock tracks only "has FIRST_MANAGER_EMAIL
+ * been reconciled", not "does any manager exist" — this account may have
+ * been created out-of-band (e.g. via scripts/bootstrap-manager.ts) with a
+ * users/{uid} doc already present, and other, unrelated manager accounts
+ * may also exist. Neither of those should ever prevent this flow from
+ * ensuring FIRST_MANAGER_EMAIL specifically has the right Auth password,
+ * the manager custom claim, and a correctly-shaped users/{uid} doc — it
+ * only ever reads/writes that one account. There is no separate secret
+ * gate, so this requires no extra environment variable to configure.
  */
 
 export const FIRST_MANAGER_EMAIL = "aqeelhumood2@gmail.com";
@@ -32,15 +36,7 @@ function setupStateRef(db: Firestore) {
 /** Read-only check for whether the one-time bootstrap has already run. */
 export async function isFirstManagerSetupLocked(db: Firestore): Promise<boolean> {
   const snap = await setupStateRef(db).get();
-  if (snap.exists && snap.data()?.firstManagerCreated === true) return true;
-
-  const existingManager = await db
-    .collection("users")
-    .where("role", "==", "manager")
-    .where("active", "==", true)
-    .limit(1)
-    .get();
-  return !existingManager.empty;
+  return snap.exists && snap.data()?.firstManagerCreated === true;
 }
 
 class SetupAlreadyCompletedError extends ServiceError {
@@ -53,36 +49,16 @@ class SetupAlreadyCompletedError extends ServiceError {
 type ClaimResult = { claimed: true } | { claimed: false };
 
 /**
- * Atomically claims the one-time setup slot. Note: a transaction's staged
- * writes are discarded if the callback throws, so the "lock permanently
- * because a manager already exists" write below must happen via a normal
- * return (not a throw) — the caller throws afterwards, once the write has
- * actually committed.
+ * Atomically claims the one-time reconciliation slot for FIRST_MANAGER_EMAIL.
+ * This intentionally does NOT check whether some other manager account
+ * exists — the only thing that should ever block this from running is that
+ * it already ran (see the module doc comment above).
  */
 async function claimSetupLock(db: Firestore): Promise<ClaimResult> {
   return db.runTransaction(async (tx) => {
     const ref = setupStateRef(db);
     const snap = await tx.get(ref);
     if (snap.exists && snap.data()?.firstManagerCreated === true) {
-      return { claimed: false };
-    }
-
-    const existingManager = await tx.get(
-      db.collection("users").where("role", "==", "manager").where("active", "==", true).limit(1)
-    );
-    if (!existingManager.empty) {
-      // The precondition ("no active manager exists") no longer holds — lock
-      // permanently even though this request didn't create the manager itself.
-      tx.set(
-        ref,
-        {
-          firstManagerCreated: true,
-          status: "locked-existing-manager",
-          completedAt: FieldValue.serverTimestamp(),
-          managerUid: null,
-        },
-        { merge: true }
-      );
       return { claimed: false };
     }
 

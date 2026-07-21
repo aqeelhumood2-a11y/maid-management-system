@@ -75,13 +75,21 @@ server-side, with fixed values for this project:
 - Name: `Aqeel`
 - A one-time bootstrap password, in `src/lib/server/bootstrapCredentials.ts`
 
-If no active manager exists yet, `completeFirstManagerSetup()`
-(`src/lib/server/setupService.ts`) creates/updates that Firebase Auth user,
-sets the `role: manager` custom claim, writes `users/{uid}` (`role: manager,
-active: true, name: Aqeel`), seeds `settings/app` with `timezone:
-"Asia/Bahrain"` if missing, and permanently marks
-`settings/setupState.firstManagerCreated = true`. **If an active manager
-already exists, it does nothing** — this is checked first, every time.
+`completeFirstManagerSetup()` (`src/lib/server/setupService.ts`)
+unconditionally reconciles that one specific account — it reads the existing
+Firebase Auth user by email (creating it only as a fallback if it's genuinely
+missing), resets its password to the bootstrap password, sets the `role:
+manager` custom claim, writes `users/{uid}` (`role: manager, active: true,
+name: Aqeel, email: aqeelhumood2@gmail.com`), and seeds `settings/app` with
+`timezone: "Asia/Bahrain"` if missing. This runs exactly once, guarded by
+`settings/setupState.firstManagerCreated` — **and only that flag**. Some
+other, unrelated manager account existing does not block it: this account was
+originally created out-of-band (via `scripts/bootstrap-manager.ts`), which
+never touches `settings/setupState`, so an earlier version of this check
+("skip if any active manager already exists") would silently lock itself out
+without ever setting this account's password — which is exactly why sign-in
+kept failing with "Invalid email or password" even though the Auth user
+existed. The fix scopes the precondition to this account specifically.
 
 **The guaranteed trigger is `src/proxy.ts`**, not `instrumentation.ts`. An
 earlier version of this relied solely on Next.js's `instrumentation.ts`
@@ -100,12 +108,12 @@ the permanent Firestore lock makes running it from two places safe.
 
 This is safe to run on every request that reaches Proxy, not just the first:
 
-- The check-and-create is atomic: `completeFirstManagerSetup()` claims the
-  `settings/setupState` lock inside a Firestore transaction that also
-  re-checks for any already-existing active manager, so concurrent requests
-  can never both create an account, and once completed the lock is never
-  released. Firestore rules additionally block any client (even an
-  authenticated manager) from writing to `settings/setupState` directly.
+- The check-and-claim is atomic: `completeFirstManagerSetup()` claims the
+  `settings/setupState` lock inside a Firestore transaction, so concurrent
+  requests can never both run the reconciliation, and once completed the
+  lock is never released. Firestore rules additionally block any client
+  (even an authenticated manager) from writing to `settings/setupState`
+  directly.
 - `src/proxy.ts` only actually attempts this once per warm server instance
   (an in-memory flag short-circuits every request after the first), and a
   hard 8-second timeout keeps a Firebase connectivity problem from ever

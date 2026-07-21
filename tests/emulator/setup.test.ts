@@ -1,6 +1,17 @@
 import { deleteApp, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import {
+  deleteApp as deleteClientApp,
+  getApps as getClientApps,
+  initializeApp as initializeClientApp,
+} from "firebase/app";
+import {
+  connectAuthEmulator,
+  getAuth as getClientAuth,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ServiceError } from "@/lib/server/errors";
 import {
@@ -19,9 +30,11 @@ import {
  * emulator's user store) so createUser/getUserByEmail/setCustomUserClaims
  * are exercised for real.
  *
- * There is no setup-secret gate — "no active manager exists yet" is the
- * entire precondition, enforced by the permanent settings/setupState lock
- * claimed inside a Firestore transaction.
+ * There is no setup-secret gate — the only precondition is "this specific
+ * reconciliation hasn't run yet", enforced by the permanent
+ * settings/setupState lock claimed inside a Firestore transaction. Other
+ * manager accounts existing (created by hand or some other path) never
+ * block reconciliation of FIRST_MANAGER_EMAIL.
  */
 
 let app: App;
@@ -30,9 +43,25 @@ let auth: Auth;
 
 const VALID_PASSWORD = "Str0ngPassw0rd!";
 
+const CLIENT_APP_NAME = "setup-test-client-app";
+
+/**
+ * Must equal the `--project` flag `npm run test:emulator` passes to
+ * `firebase emulators:exec` (see package.json). The Auth Emulator's public,
+ * client-facing REST endpoints (signInWithPassword etc.) don't take a
+ * project ID in the URL — unlike the Admin SDK's project-scoped endpoints —
+ * so with multiple projects loaded into one emulator process (this suite
+ * also runs demo-maid-mgmt-tx and demo-maid-mgmt-rules), an ambiguous
+ * client request only resolves to the right project bucket when it matches
+ * the emulator's default project. Verified empirically against the Auth
+ * Emulator: an Admin-created user under a non-default project ID is
+ * invisible to a client signInWithEmailAndPassword call.
+ */
+const PROJECT_ID = "demo-maid-mgmt";
+
 beforeAll(() => {
   const existing = getApps().find((a) => a.name === "setup-test-app");
-  app = existing ?? initializeApp({ projectId: "demo-maid-mgmt-setup" }, "setup-test-app");
+  app = existing ?? initializeApp({ projectId: PROJECT_ID }, "setup-test-app");
   db = getFirestore(app);
   auth = getAuth(app);
 });
@@ -40,6 +69,30 @@ beforeAll(() => {
 afterAll(async () => {
   await deleteApp(app);
 });
+
+/**
+ * Signs in through the real client SDK against the Auth emulator — the same
+ * signInWithEmailAndPassword call src/app/login/page.tsx makes from the
+ * browser — so "does the password actually work" is verified end-to-end
+ * rather than assumed from the Admin SDK's write succeeding.
+ */
+async function signInAsClient(password: string): Promise<string> {
+  const existingClientApp = getClientApps().find((a) => a.name === CLIENT_APP_NAME);
+  const clientApp =
+    existingClientApp ??
+    initializeClientApp({ apiKey: "fake-api-key", projectId: PROJECT_ID }, CLIENT_APP_NAME);
+  const clientAuth = getClientAuth(clientApp);
+  connectAuthEmulator(clientAuth, `http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}`, {
+    disableWarnings: true,
+  });
+  try {
+    const cred = await signInWithEmailAndPassword(clientAuth, FIRST_MANAGER_EMAIL, password);
+    return cred.user.uid;
+  } finally {
+    await signOut(clientAuth).catch(() => undefined);
+    await deleteClientApp(clientApp).catch(() => undefined);
+  }
+}
 
 async function clearFirestoreState() {
   for (const name of ["users", "settings", "activityLogs"]) {
@@ -85,9 +138,12 @@ describe("isFirstManagerSetupLocked", () => {
     expect(await isFirstManagerSetupLocked(db)).toBe(false);
   });
 
-  it("is locked once an active manager exists, even without ever running setup", async () => {
-    await seedActiveManager("some-manager");
-    expect(await isFirstManagerSetupLocked(db)).toBe(true);
+  it("stays unlocked when an unrelated active manager exists but reconciliation never ran", async () => {
+    // Some other manager account existing (e.g. created by hand through the
+    // app) must never block reconciliation of FIRST_MANAGER_EMAIL — only
+    // actually running the bootstrap for that specific account should.
+    await seedActiveManager("some-other-manager");
+    expect(await isFirstManagerSetupLocked(db)).toBe(false);
   });
 });
 
@@ -160,16 +216,74 @@ describe("completeFirstManagerSetup — permanent lock", () => {
     expect(managers.size).toBe(1);
   });
 
-  it("locks permanently (and rejects) if an active manager already exists via another path", async () => {
+  it("still reconciles FIRST_MANAGER_EMAIL when an unrelated active manager already exists", async () => {
     await seedActiveManager("manager-created-elsewhere");
 
-    await expect(
-      completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD })
-    ).rejects.toMatchObject({ code: "SETUP_ALREADY_COMPLETED" });
+    const { uid } = await completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD });
+
+    const authUser = await auth.getUser(uid);
+    expect(authUser.email).toBe(FIRST_MANAGER_EMAIL);
+    expect(authUser.customClaims?.role).toBe("manager");
+
+    const userDoc = await db.collection("users").doc(uid).get();
+    expect(userDoc.data()).toMatchObject({
+      email: FIRST_MANAGER_EMAIL,
+      name: FIRST_MANAGER_NAME,
+      role: "manager",
+      active: true,
+    });
+
+    // The unrelated manager account is left completely untouched.
+    const otherDoc = await db.collection("users").doc("manager-created-elsewhere").get();
+    expect(otherDoc.data()).toMatchObject({ role: "manager", active: true });
 
     expect(await isFirstManagerSetupLocked(db)).toBe(true);
-    // No account was created for the setup-flow email in this scenario.
-    await expect(auth.getUserByEmail(FIRST_MANAGER_EMAIL)).rejects.toBeTruthy();
+  });
+
+  it("resets the password and claim for FIRST_MANAGER_EMAIL when the Auth account already exists", async () => {
+    // Reproduces the real-world scenario: the Auth user and its users/{uid}
+    // doc were created out-of-band (e.g. scripts/bootstrap-manager.ts) with
+    // a password the bootstrap doesn't know, and no custom claim set yet.
+    const preexisting = await auth.createUser({
+      email: FIRST_MANAGER_EMAIL,
+      password: "some-forgotten-password",
+      displayName: "اسم المدير",
+    });
+    await db.collection("users").doc(preexisting.uid).set({
+      email: FIRST_MANAGER_EMAIL,
+      name: "اسم المدير",
+      role: "manager",
+      active: true,
+      createdAt: new Date(),
+      createdBy: "manual-script",
+      updatedAt: new Date(),
+      updatedBy: "manual-script",
+    });
+
+    const { uid } = await completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD });
+    expect(uid).toBe(preexisting.uid);
+
+    const authUser = await auth.getUser(uid);
+    expect(authUser.customClaims?.role).toBe("manager");
+
+    const userDoc = await db.collection("users").doc(uid).get();
+    expect(userDoc.data()).toMatchObject({
+      email: FIRST_MANAGER_EMAIL,
+      name: FIRST_MANAGER_NAME,
+      role: "manager",
+      active: true,
+    });
+
+    // The real end-to-end check for "Invalid email or password": actually
+    // sign in with signInWithEmailAndPassword, the exact call the browser
+    // makes, using the new bootstrap password.
+    const signedInUid = await signInAsClient(VALID_PASSWORD);
+    expect(signedInUid).toBe(uid);
+
+    // The old, forgotten password must no longer work.
+    await expect(signInAsClient("some-forgotten-password")).rejects.toMatchObject({
+      code: "auth/wrong-password",
+    });
   });
 
   it("resolves two concurrent setup attempts with exactly one winner", async () => {
