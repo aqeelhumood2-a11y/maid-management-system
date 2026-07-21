@@ -5,7 +5,7 @@ import {
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
 import { readFileSync } from "node:fs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 import {
   addDoc,
   collection,
@@ -154,11 +154,17 @@ describe("workers collection — manager-only writes", () => {
   });
 });
 
-describe("slots collection — double-booking lock", () => {
-  it("allows creating a slot that doesn't exist yet", async () => {
+describe("slots collection — client writes are always denied", () => {
+  // Double-booking / Friday-authorization enforcement lives entirely in the
+  // trusted server layer now (src/lib/server/bookingService.ts, called only
+  // from src/app/api/bookings and src/app/api/recurring). Firestore rules'
+  // job here is simply to make sure no client — employee or manager — can
+  // write to this collection directly, which is what actually closes the
+  // "an employee could bypass the UI and write to Firestore" bypass.
+  it("denies an employee creating a slot directly, even with well-formed data", async () => {
     await seedUser("emp5", "employee");
     const empDb = testEnv.authenticatedContext("emp5").firestore();
-    await assertSucceeds(
+    await assertFails(
       setDoc(doc(empDb, "slots", "w1_2026-07-22_morning"), {
         bookingId: "b1",
         workerId: "w1",
@@ -169,32 +175,48 @@ describe("slots collection — double-booking lock", () => {
     );
   });
 
-  it("rejects overwriting an existing slot (the write becomes an update, which is always denied)", async () => {
-    await seedUser("emp6", "employee");
-    const empDb = testEnv.authenticatedContext("emp6").firestore();
-    const slotRef = doc(empDb, "slots", "w1_2026-07-23_morning");
-    await assertSucceeds(
-      setDoc(slotRef, { bookingId: "b1", workerId: "w1", date: "2026-07-23", shift: "morning", createdAt: serverTimestamp() })
-    );
+  it("denies a manager creating a slot directly too — everyone goes through the server", async () => {
+    await seedUser("mgr-slot", "manager");
+    const mgrDb = testEnv.authenticatedContext("mgr-slot").firestore();
     await assertFails(
-      setDoc(slotRef, { bookingId: "b2", workerId: "w1", date: "2026-07-23", shift: "morning", createdAt: serverTimestamp() })
+      setDoc(doc(mgrDb, "slots", "w1_2026-07-24_morning"), {
+        bookingId: "b1",
+        workerId: "w1",
+        date: "2026-07-24",
+        shift: "morning",
+        createdAt: serverTimestamp(),
+      })
     );
   });
 
-  it("allows deleting a slot to release it", async () => {
+  it("denies deleting a slot directly (releasing one is also a server-side operation)", async () => {
     await seedUser("emp7", "employee");
     const empDb = testEnv.authenticatedContext("emp7").firestore();
     const slotRef = doc(empDb, "slots", "w1_2026-07-24_afternoon");
-    await setDoc(slotRef, { bookingId: "b1", workerId: "w1", date: "2026-07-24", shift: "afternoon", createdAt: serverTimestamp() });
-    await assertSucceeds(deleteDoc(slotRef));
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "slots", "w1_2026-07-24_afternoon"), {
+        bookingId: "b1",
+        workerId: "w1",
+        date: "2026-07-24",
+        shift: "afternoon",
+        createdAt: serverTimestamp(),
+      });
+    });
+    await assertFails(deleteDoc(slotRef));
+  });
+
+  it("still allows reads, so the real-time schedule grids keep working", async () => {
+    await seedUser("emp5b", "employee");
+    const empDb = testEnv.authenticatedContext("emp5b").firestore();
+    await assertSucceeds(getDocs(collection(empDb, "slots")));
   });
 });
 
-describe("bookings collection", () => {
-  it("allows an employee to create a valid active booking", async () => {
+describe("bookings collection — client writes are always denied", () => {
+  it("denies an employee creating a booking directly, even a well-formed weekday one", async () => {
     await seedUser("emp8", "employee");
     const empDb = testEnv.authenticatedContext("emp8").firestore();
-    await assertSucceeds(
+    await assertFails(
       addDoc(collection(empDb, "bookings"), {
         date: "2026-07-22",
         shift: "morning",
@@ -225,34 +247,49 @@ describe("bookings collection", () => {
     );
   });
 
-  it("rejects a booking with an invalid shift value", async () => {
-    await seedUser("emp9", "employee");
-    const empDb = testEnv.authenticatedContext("emp9").firestore();
+  it("denies a manager creating a booking directly too, including one dated on a Friday", async () => {
+    // This is the exact bypass the fix closes: previously an authenticated
+    // client (any role) could write straight to `bookings` and the only
+    // thing stopping a Friday booking was the UI never offering the form.
+    await seedUser("mgr4", "manager");
+    const mgrDb = testEnv.authenticatedContext("mgr4").firestore();
     await assertFails(
-      addDoc(collection(empDb, "bookings"), {
-        date: "2026-07-22",
-        shift: "night",
+      addDoc(collection(mgrDb, "bookings"), {
+        date: "2026-07-24", // Friday
+        shift: "morning",
         workerId: "w1",
+        workerName: "عاملة",
         areaId: "a1",
+        areaName: "منطقة",
         hours: 4,
         amount: 10,
         paymentMethod: null,
         paid: false,
-        source: "today",
+        paymentDate: null,
+        paymentBy: null,
+        customerPhone: "",
+        customerLocation: "",
+        source: "manager_future",
+        recurringSeriesId: null,
         status: "active",
-        createdBy: "emp9",
+        cancelledAt: null,
+        cancelledBy: null,
+        cancelledReason: null,
+        cancelScope: null,
+        createdBy: "mgr4",
         createdAt: serverTimestamp(),
-        updatedBy: "emp9",
+        updatedBy: "mgr4",
         updatedAt: serverTimestamp(),
       })
     );
   });
 
-  it("rejects forging createdBy to someone else", async () => {
+  it("denies editing an existing booking directly (e.g. trying to move it onto a Friday date)", async () => {
     await seedUser("emp10", "employee");
     const empDb = testEnv.authenticatedContext("emp10").firestore();
-    await assertFails(
-      addDoc(collection(empDb, "bookings"), {
+    let bookingId = "";
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const ref = await addDoc(collection(ctx.firestore(), "bookings"), {
         date: "2026-07-22",
         shift: "morning",
         workerId: "w1",
@@ -263,92 +300,47 @@ describe("bookings collection", () => {
         paid: false,
         source: "today",
         status: "active",
-        createdBy: "someone-else",
+        createdBy: "emp10",
         createdAt: serverTimestamp(),
         updatedBy: "emp10",
         updatedAt: serverTimestamp(),
-      })
-    );
+      });
+      bookingId = ref.id;
+    });
+    await assertFails(updateDoc(doc(empDb, "bookings", bookingId), { date: "2026-07-24" }));
   });
 
-  it("lets either role transition a booking from unpaid to paid and records who did it", async () => {
-    // The dedicated "Mark Paid" workflow lives on the Unpaid Bookings page, which
-    // is manager-only via route protection — Firestore rules validate the field
-    // shape here, the same as any other booking edit (employees also set payment
-    // method through the regular Today/Weekly edit flow).
-    await seedUser("emp11", "employee");
-    const empDb = testEnv.authenticatedContext("emp11").firestore();
-
-    const bookingData = {
-      date: "2026-07-22",
-      shift: "morning",
-      workerId: "w1",
-      workerName: "w",
-      areaId: "a1",
-      areaName: "a",
-      hours: 4,
-      amount: 10,
-      paymentMethod: null,
-      paid: false,
-      paymentDate: null,
-      paymentBy: null,
-      customerPhone: "",
-      customerLocation: "",
-      source: "today",
-      recurringSeriesId: null,
-      status: "active",
-      cancelledAt: null,
-      cancelledBy: null,
-      cancelledReason: null,
-      cancelScope: null,
-      createdBy: "emp11",
-      createdAt: serverTimestamp(),
-      updatedBy: "emp11",
-      updatedAt: serverTimestamp(),
-    };
-    const ref = await assertSucceeds(addDoc(collection(empDb, "bookings"), bookingData));
-
-    await assertSucceeds(
-      updateDoc(doc(empDb, "bookings", ref.id), {
-        paid: true,
-        paymentMethod: "cash",
-        paymentDate: serverTimestamp(),
-        paymentBy: "emp11",
-        updatedBy: "emp11",
-        updatedAt: serverTimestamp(),
-      })
-    );
-
-    const snap = await getDoc(doc(empDb, "bookings", ref.id));
-    expect(snap.data()?.paymentBy).toBe("emp11");
-  });
-
-  it("never allows deleting a booking (only cancellation via status)", async () => {
-    await seedUser("mgr5", "manager");
-    const mgrDb = testEnv.authenticatedContext("mgr5").firestore();
-    const ref = await assertSucceeds(
-      addDoc(collection(mgrDb, "bookings"), {
+  it("never allows deleting a booking (only cancellation via the server, by status)", async () => {
+    let bookingId = "";
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const ref = await addDoc(collection(ctx.firestore(), "bookings"), {
         date: "2026-07-22",
         shift: "morning",
         workerId: "w1",
         areaId: "a1",
         hours: 4,
         amount: 10,
-        paymentMethod: null,
-        paid: false,
-        source: "manager_future",
         status: "active",
-        createdBy: "mgr5",
+        createdBy: "seed",
         createdAt: serverTimestamp(),
-        updatedBy: "mgr5",
+        updatedBy: "seed",
         updatedAt: serverTimestamp(),
-      })
-    );
-    await assertFails(deleteDoc(doc(mgrDb, "bookings", ref.id)));
+      });
+      bookingId = ref.id;
+    });
+    await seedUser("mgr5", "manager");
+    const mgrDb = testEnv.authenticatedContext("mgr5").firestore();
+    await assertFails(deleteDoc(doc(mgrDb, "bookings", bookingId)));
+  });
+
+  it("still allows reads, so real-time schedules/reports keep working", async () => {
+    await seedUser("emp8b", "employee");
+    const empDb = testEnv.authenticatedContext("emp8b").firestore();
+    await assertSucceeds(getDocs(collection(empDb, "bookings")));
   });
 });
 
-describe("recurringSchedules & recurringExceptions — manager-only", () => {
+describe("recurringSchedules & recurringExceptions — client writes are always denied", () => {
   it("denies an employee from creating a recurring schedule", async () => {
     await seedUser("emp12", "employee");
     const empDb = testEnv.authenticatedContext("emp12").firestore();
@@ -368,29 +360,10 @@ describe("recurringSchedules & recurringExceptions — manager-only", () => {
     );
   });
 
-  it("rejects a recurring schedule on Friday (dayOfWeek 5)", async () => {
-    await seedUser("mgr6", "manager");
-    const mgrDb = testEnv.authenticatedContext("mgr6").firestore();
-    await assertFails(
-      addDoc(collection(mgrDb, "recurringSchedules"), {
-        workerId: "w1",
-        shift: "morning",
-        dayOfWeek: 5,
-        hours: 4,
-        amount: 10,
-        status: "active",
-        createdBy: "mgr6",
-        createdAt: serverTimestamp(),
-        updatedBy: "mgr6",
-        updatedAt: serverTimestamp(),
-      })
-    );
-  });
-
-  it("allows a manager to create a valid recurring schedule", async () => {
+  it("denies a manager from creating a recurring schedule directly too — server-only, same as bookings", async () => {
     await seedUser("mgr7", "manager");
     const mgrDb = testEnv.authenticatedContext("mgr7").firestore();
-    await assertSucceeds(
+    await assertFails(
       addDoc(collection(mgrDb, "recurringSchedules"), {
         workerId: "w1",
         shift: "morning",
@@ -402,6 +375,21 @@ describe("recurringSchedules & recurringExceptions — manager-only", () => {
         createdAt: serverTimestamp(),
         updatedBy: "mgr7",
         updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  it("denies creating a recurringException directly", async () => {
+    await seedUser("mgr7b", "manager");
+    const mgrDb = testEnv.authenticatedContext("mgr7b").firestore();
+    await assertFails(
+      setDoc(doc(mgrDb, "recurringExceptions", "r1_2026-08-05"), {
+        recurringId: "r1",
+        date: "2026-08-05",
+        type: "cancelled",
+        reason: null,
+        createdBy: "mgr7b",
+        createdAt: serverTimestamp(),
       })
     );
   });

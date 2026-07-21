@@ -5,12 +5,11 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner, Spinner, SuccessBanner } from "@/components/ui/Feedback";
-import { useAuth } from "@/context/AuthContext";
 import { useAreas } from "@/hooks/useAreas";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useRecurringSchedules } from "@/hooks/useRecurring";
 import { dayOfWeek, todayBahrain, weekdayLabelAr } from "@/lib/date";
-import { getDb } from "@/lib/firebase/client";
+import { ApiError } from "@/lib/booking";
 import {
   availableDaysOfWeek,
   cancelRecurringOccurrence,
@@ -25,7 +24,6 @@ const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "
 const PAYMENT_LABEL: Record<string, string> = { benefit: "بنفت", cash: "نقدي" };
 
 export default function RecurringPage() {
-  const { actingUser } = useAuth();
   const { schedules, loading } = useRecurringSchedules();
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<RecurringSchedule | null>(null);
@@ -74,13 +72,9 @@ export default function RecurringPage() {
         </div>
       )}
 
-      {addOpen && <AddRecurringModal onClose={() => setAddOpen(false)} actingUser={actingUser} />}
-      {editing && (
-        <EditRecurringModal recurring={editing} onClose={() => setEditing(null)} actingUser={actingUser} />
-      )}
-      {cancelling && (
-        <CancelRecurringModal recurring={cancelling} onClose={() => setCancelling(null)} actingUser={actingUser} />
-      )}
+      {addOpen && <AddRecurringModal onClose={() => setAddOpen(false)} />}
+      {editing && <EditRecurringModal recurring={editing} onClose={() => setEditing(null)} />}
+      {cancelling && <CancelRecurringModal recurring={cancelling} onClose={() => setCancelling(null)} />}
     </div>
   );
 }
@@ -95,13 +89,7 @@ function nextIsoForDow(dow: number): string {
   return today;
 }
 
-function AddRecurringModal({
-  onClose,
-  actingUser,
-}: {
-  onClose: () => void;
-  actingUser: { uid: string; email: string; name: string };
-}) {
+function AddRecurringModal({ onClose }: { onClose: () => void }) {
   const { workers } = useWorkers();
   const { areas } = useAreas();
   const activeWorkers = workers.filter((w) => w.active);
@@ -135,7 +123,7 @@ function AddRecurringModal({
     setLoading(true);
     setError("");
     try {
-      await createRecurringSchedule(getDb(), {
+      await createRecurringSchedule({
         workerId: worker.id,
         workerName: worker.name,
         areaId: area.id,
@@ -148,11 +136,10 @@ function AddRecurringModal({
         customerPhone,
         customerLocation,
         startDate,
-        actingUser,
       });
       onClose();
-    } catch {
-      setError("تعذر إنشاء الجدول المتكرر");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر إنشاء الجدول المتكرر");
     } finally {
       setLoading(false);
     }
@@ -214,11 +201,9 @@ function AddRecurringModal({
 function EditRecurringModal({
   recurring,
   onClose,
-  actingUser,
 }: {
   recurring: RecurringSchedule;
   onClose: () => void;
-  actingUser: { uid: string; email: string; name: string };
 }) {
   const { areas } = useAreas();
   const activeAreas = areas.filter((a) => a.active || a.id === recurring.areaId);
@@ -248,7 +233,7 @@ function EditRecurringModal({
     setLoading(true);
     setError("");
     try {
-      await editRecurringOccurrence(getDb(), {
+      await editRecurringOccurrence({
         recurring,
         date: effectiveDate,
         scope,
@@ -261,11 +246,10 @@ function EditRecurringModal({
           customerPhone,
           customerLocation,
         },
-        actingUser,
       });
       onClose();
-    } catch {
-      setError("تعذر حفظ التعديل");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر حفظ التعديل");
     } finally {
       setLoading(false);
     }
@@ -324,11 +308,9 @@ function EditRecurringModal({
 function CancelRecurringModal({
   recurring,
   onClose,
-  actingUser,
 }: {
   recurring: RecurringSchedule;
   onClose: () => void;
-  actingUser: { uid: string; email: string; name: string };
 }) {
   const [scope, setScope] = useState<RecurringCancelScope>("single");
   const [effectiveDate, setEffectiveDate] = useState(nextIsoForDow(recurring.dayOfWeek));
@@ -345,17 +327,16 @@ function CancelRecurringModal({
     setLoading(true);
     setError("");
     try {
-      await cancelRecurringOccurrence(getDb(), {
+      await cancelRecurringOccurrence({
         recurring,
         date: effectiveDate,
         scope,
         reason: reason || null,
-        actingUser,
       });
       setSuccess("تم الإلغاء بنجاح");
       setTimeout(onClose, 800);
-    } catch {
-      setError("تعذر تنفيذ الإلغاء");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر تنفيذ الإلغاء");
     } finally {
       setLoading(false);
     }

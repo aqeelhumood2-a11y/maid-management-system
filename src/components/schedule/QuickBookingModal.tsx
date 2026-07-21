@@ -5,11 +5,9 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { TextInput, SelectInput, TextArea } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
-import { useAuth } from "@/context/AuthContext";
 import { useAreas } from "@/hooks/useAreas";
-import { BookingConflictError, createBooking } from "@/lib/booking";
+import { ApiError, createBooking } from "@/lib/booking";
 import { formatDateAr, weekdayLabelAr } from "@/lib/date";
-import { getDb } from "@/lib/firebase/client";
 import type { BookingSource, PaymentMethod, Shift, Worker } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
@@ -31,7 +29,6 @@ export function QuickBookingModal({
   source: BookingSource;
   onSuccess: () => void;
 }) {
-  const { actingUser } = useAuth();
   const { areas } = useAreas();
   const activeAreas = areas.filter((a) => a.active);
 
@@ -76,7 +73,7 @@ export function QuickBookingModal({
 
     setLoading(true);
     try {
-      await createBooking(getDb(), {
+      await createBooking({
         date,
         shift,
         workerId: worker.id,
@@ -90,17 +87,12 @@ export function QuickBookingModal({
         customerLocation,
         source,
         recurringSeriesId: null,
-        actingUser,
       });
       reset();
       onSuccess();
       onClose();
     } catch (err) {
-      if (err instanceof BookingConflictError) {
-        setError(err.message);
-      } else {
-        setError("تعذر حفظ الحجز، حاول مرة أخرى");
-      }
+      setError(err instanceof ApiError ? err.message : "تعذر حفظ الحجز، حاول مرة أخرى");
     } finally {
       setLoading(false);
     }

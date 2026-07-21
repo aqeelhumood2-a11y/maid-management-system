@@ -88,93 +88,46 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------
     // slots — the double-booking lock. A slot document id is always
-    // `${workerId}_${date}_${shift}`. It may only ever be created while
-    // absent and deleted on cancellation; it can never be overwritten,
-    // which is what guarantees a slot cannot silently change owner.
+    // `${workerId}_${date}_${shift}`.
+    //
+    // Writes are exclusively performed server-side, through the Admin SDK
+    // (see src/lib/server/bookingService.ts, called only from the API
+    // routes under src/app/api/bookings and src/app/api/recurring). That
+    // server layer is what enforces "only a manager may create, edit, or
+    // move a booking into a Friday slot" — a rule Firestore Security Rules
+    // cannot reliably evaluate, since it would need to derive a weekday
+    // from a plain `yyyy-MM-dd` string. Denying all direct client writes
+    // here removes the bypass entirely rather than trying to re-implement
+    // that check in the rules language. Reads stay open for the real-time
+    // schedule grids and reports.
     // ---------------------------------------------------------------
     match /slots/{slotId} {
       allow read: if isActiveUser();
-      allow create: if isActiveUser() &&
-        slotId == (request.resource.data.workerId + '_' + request.resource.data.date + '_' + request.resource.data.shift) &&
-        isServerTimestamp(request.resource.data.createdAt);
-      allow update: if false;
-      allow delete: if isActiveUser();
+      allow write: if false;
     }
 
     // ---------------------------------------------------------------
-    // bookings
+    // bookings — see the note on /slots above; same rationale applies.
     // ---------------------------------------------------------------
     match /bookings/{bookingId} {
       allow read: if isActiveUser();
-
-      allow create: if isActiveUser() &&
-        request.resource.data.shift in ['morning', 'afternoon'] &&
-        request.resource.data.status == 'active' &&
-        request.resource.data.hours is number && request.resource.data.hours > 0 &&
-        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
-        (request.resource.data.paymentMethod == null || request.resource.data.paymentMethod in ['benefit', 'cash']) &&
-        request.resource.data.paid == (request.resource.data.paymentMethod != null) &&
-        request.resource.data.source in ['today', 'weekly', 'manager_future', 'recurring'] &&
-        request.resource.data.date is string &&
-        request.resource.data.workerId is string &&
-        request.resource.data.areaId is string &&
-        request.resource.data.createdBy == request.auth.uid &&
-        request.resource.data.updatedBy == request.auth.uid &&
-        isServerTimestamp(request.resource.data.createdAt) &&
-        isServerTimestamp(request.resource.data.updatedAt);
-
-      allow update: if isActiveUser() &&
-        request.resource.data.workerId == resource.data.workerId &&
-        request.resource.data.date == resource.data.date &&
-        request.resource.data.shift == resource.data.shift &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        request.resource.data.createdBy == resource.data.createdBy &&
-        request.resource.data.status in ['active', 'cancelled'] &&
-        request.resource.data.hours is number && request.resource.data.hours > 0 &&
-        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
-        (request.resource.data.paymentMethod == null || request.resource.data.paymentMethod in ['benefit', 'cash']) &&
-        isServerTimestamp(request.resource.data.updatedAt) &&
-        request.resource.data.updatedBy == request.auth.uid;
-
-      allow delete: if false;
+      allow write: if false;
     }
 
     // ---------------------------------------------------------------
     // recurringSchedules & recurringExceptions — manager-only feature.
+    // The "single" edit/cancel scopes materialize or release a concrete
+    // Booking, so these are written server-side too (see
+    // src/lib/server/recurringService.ts) for the same reason as /bookings.
     // ---------------------------------------------------------------
     match /recurringSchedules/{id} {
       allow read: if isActiveUser();
-      allow create: if isManager() &&
-        request.resource.data.dayOfWeek is number &&
-        request.resource.data.dayOfWeek != 5 &&
-        request.resource.data.shift in ['morning', 'afternoon'] &&
-        request.resource.data.status == 'active' &&
-        request.resource.data.hours is number && request.resource.data.hours > 0 &&
-        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
-        request.resource.data.createdBy == request.auth.uid &&
-        isServerTimestamp(request.resource.data.createdAt) &&
-        isServerTimestamp(request.resource.data.updatedAt);
-      allow update: if isManager() &&
-        request.resource.data.workerId == resource.data.workerId &&
-        request.resource.data.dayOfWeek == resource.data.dayOfWeek &&
-        request.resource.data.shift == resource.data.shift &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        request.resource.data.createdBy == resource.data.createdBy &&
-        request.resource.data.status in ['active', 'ended', 'cancelled'] &&
-        isServerTimestamp(request.resource.data.updatedAt) &&
-        request.resource.data.updatedBy == request.auth.uid;
-      allow delete: if false;
+      allow write: if false;
     }
 
     match /recurringExceptions/{id} {
       allow read: if isActiveUser();
-      allow create: if isManager() &&
-        id == (request.resource.data.recurringId + '_' + request.resource.data.date) &&
-        request.resource.data.type == 'cancelled' &&
-        request.resource.data.createdBy == request.auth.uid &&
-        isServerTimestamp(request.resource.data.createdAt);
-      allow update: if false;
-      allow delete: if false;
+      allow write: if false;
     }
 
     // ---------------------------------------------------------------

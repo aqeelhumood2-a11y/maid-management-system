@@ -4,19 +4,16 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner, SuccessBanner } from "@/components/ui/Feedback";
-import { useAuth } from "@/context/AuthContext";
 import { useAreas } from "@/hooks/useAreas";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
 import { resolveCell } from "@/lib/availability";
-import { BookingConflictError, createBooking } from "@/lib/booking";
+import { ApiError, createBooking } from "@/lib/booking";
 import { isFriday, todayBahrain } from "@/lib/date";
-import { getDb } from "@/lib/firebase/client";
 import type { PaymentMethod, Shift } from "@/lib/types";
 
 export default function FutureBookingPage() {
-  const { actingUser } = useAuth();
   const { workers } = useWorkers();
   const { areas } = useAreas();
   const { schedules } = useRecurringSchedules();
@@ -79,7 +76,7 @@ export default function FutureBookingPage() {
 
     setLoading(true);
     try {
-      await createBooking(getDb(), {
+      await createBooking({
         date,
         shift,
         workerId: worker.id,
@@ -93,12 +90,11 @@ export default function FutureBookingPage() {
         customerLocation,
         source: "manager_future",
         recurringSeriesId: null,
-        actingUser,
       });
       setSuccess("تم إنشاء الحجز بنجاح");
       reset();
     } catch (err) {
-      setError(err instanceof BookingConflictError ? err.message : "تعذر حفظ الحجز");
+      setError(err instanceof ApiError ? err.message : "تعذر حفظ الحجز");
     } finally {
       setLoading(false);
     }

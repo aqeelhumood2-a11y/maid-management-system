@@ -179,28 +179,33 @@ npm start
 
 ## Concurrency and double-booking strategy
 
-Every booking's worker/date/shift maps to a deterministic Firestore document id
-`slots/{workerId}_{date}_{shift}`. Creating a booking runs in a single Firestore
-transaction (`runTransaction`) that:
+`bookings`, `slots`, `recurringSchedules` and `recurringExceptions` are written
+**exclusively server-side**, through the Admin SDK
+(`src/lib/server/bookingService.ts` and `src/lib/server/recurringService.ts`),
+called only from the API routes under `src/app/api/bookings` and
+`src/app/api/recurring`. The client never writes to these collections
+directly — Firestore rules deny it outright (`allow write: if false`) — it
+only reads them in real time via `onSnapshot`.
 
-1. Reads the slot document.
+Every booking's worker/date/shift maps to a deterministic Firestore document id
+`slots/{workerId}_{date}_{shift}`. Creating (or moving) a booking runs in a
+single Firestore transaction (Admin SDK `db.runTransaction`) that:
+
+1. Reads the slot document for the target worker/date/shift.
 2. Aborts with `تم حجز العاملة للتو، اختر عاملة أخرى.` if it already exists.
 3. Otherwise creates the booking and the slot document together, atomically.
 
-If two clients race for the same slot, Firestore's optimistic-concurrency
+If two requests race for the same slot, Firestore's optimistic-concurrency
 transaction retry guarantees only one commit wins — the loser's transaction
 re-reads the now-existing slot doc and throws the conflict error instead of
-silently double-booking. Firestore security rules back this up independently:
-a slot document can only ever be **created** while absent (`allow update: if
-false`), so even a buggy client cannot silently overwrite an active lock.
-Cancelling a booking deletes the slot document in the same transaction that
-marks the booking `cancelled`, releasing the worker for that slot immediately
-for every connected client via the real-time listener.
+silently double-booking. Cancelling a booking deletes the slot document in the
+same transaction that marks the booking `cancelled`, releasing the worker for
+that slot immediately for every connected client via the real-time listener.
 
 Editing/cancelling a **recurring** occurrence that hasn't been booked yet for
-that specific date "materializes" it — the transaction creates a concrete
-`bookings` document (same slot-locking guarantee applies) instead of ever
-pre-generating every future week's bookings.
+that specific date "materializes" it — the same server transaction creates a
+concrete `bookings` document (same slot-locking guarantee applies) instead of
+ever pre-generating every future week's bookings.
 
 ## Security approach
 
@@ -213,13 +218,39 @@ pre-generating every future week's bookings.
   verification plus a fresh Firestore `active`/`role` read — happens in the
   `(protected)` and `manager` layouts' Server Components on every request, so a
   deactivation takes effect on the very next navigation, not next login.
-- **Firestore security rules** (`firestore.rules`) are the data-layer boundary
-  and do not trust the client: role and active-status are re-read from each
-  caller's own `users/{uid}` document (not from a possibly-stale ID token
-  claim), write payloads are validated field-by-field (enums for shift/payment
-  method/status, required types, `createdBy`/timestamps pinned to the request),
-  and manager-only collections (`workers`, `areas`, `recurringSchedules`,
-  `recurringExceptions`) reject employee writes outright.
+- **All writes to `bookings`, `slots`, `recurringSchedules` and
+  `recurringExceptions` go through Admin-SDK API routes**, never straight from
+  the browser to Firestore. Each route calls `getServerSession()` to derive
+  the caller's verified `uid`/`role` from the session cookie — never from
+  anything the request body claims — and then calls into
+  `src/lib/server/bookingService.ts` / `recurringService.ts`, which:
+  - reject any attempt to **create a booking on a Friday date**, or to
+    **edit/move an existing booking so its date becomes a Friday**, unless
+    `actor.role === "manager"` (`FridayRestrictedError`, matching the
+    approved requirement that only a manager may create an exceptional
+    Friday booking);
+  - re-validate every field (shift/payment-method enums, positive
+    hours/amount, date shape) — nothing here trusts client-side form
+    validation;
+  - require `role === "manager"` for all recurring-schedule operations.
+
+  This was a deliberate fix: Firestore rules alone cannot reliably derive a
+  weekday from a plain `yyyy-MM-dd` string, so a rules-only implementation of
+  the Friday restriction could be bypassed by a client writing directly to
+  Firestore with the SDK. Routing every write through this server layer and
+  then denying direct client writes in `firestore.rules` closes that gap
+  entirely rather than trying to re-implement calendar math in the rules
+  language. See `tests/emulator/transactions.test.ts` for tests exercising
+  this directly (weekday booking, Friday rejection, move-to-Friday rejection,
+  manager override, concurrent double-booking) and
+  `tests/emulator/rules.test.ts` for tests proving direct client writes to
+  these four collections are rejected regardless of role or payload shape.
+- **Firestore security rules** (`firestore.rules`) are the remaining data-layer
+  boundary for the collections still written directly by clients (`workers`,
+  `areas`, `settings`, and the `activityLogs` audit trail for those actions):
+  role and active-status are re-read from each caller's own `users/{uid}`
+  document (not from a possibly-stale ID token claim), and write payloads are
+  validated field-by-field.
 - `users/{uid}` documents can **never** be written by any client — accounts are
   only created/edited/activated through the Admin-SDK-backed `/api/users` route,
   which is itself gated by `requireManagerSession()`. This is what makes
@@ -249,32 +280,31 @@ Settings (business name, area CRUD, user account creation/activation).
 ## Tests and exact results
 
 ```
-npm run test        → 3 files, 22 tests passed  (date / availability / recurring pure logic)
-npm run test:emulator → 2 files, 39 tests passed (Firestore rules + booking transactions,
-                         run against the Firebase Emulator Suite via `firebase emulators:exec`)
-npm run lint         → 0 problems
-npm run typecheck    → 0 errors
-npm run build        → succeeds (Turbopack production build, 18 routes)
+npm run test           → 3 files, 22 tests passed  (date / availability / recurring pure logic)
+npm run test:emulator  → 2 files, 43 tests passed  (Firestore rules + server booking/recurring
+                          service, run against the Firebase Emulator Suite via
+                          `firebase emulators:exec`)
+npm run lint            → 0 problems
+npm run typecheck       → 0 errors
+npm run build           → succeeds (Turbopack production build, 25 routes)
 ```
 
 Covered scenarios include: route/role protection expectations at the rules
 layer, worker activation/deactivation, automatic availability calculation,
-Friday holiday behavior and exceptional bookings, double-booking prevention
-under both sequential and concurrent attempts, cancellation releasing
-availability, recurring single-occurrence exceptions, future availability many
-months out with zero pre-generated documents, the unpaid→paid transition, and
-cancelled-booking exclusion from active-status queries (what Reports/Routes
-rely on).
+Friday holiday behavior, double-booking prevention under both sequential and
+concurrent attempts, cancellation releasing availability, recurring
+single-occurrence exceptions, future availability many months out with zero
+pre-generated documents, the unpaid→paid transition, and — for the Friday
+exceptional-booking authorization fix specifically — an employee's normal
+weekday booking succeeding, an employee's Friday booking being rejected, an
+employee being unable to move an existing booking onto a Friday date (while
+still being able to edit a Friday booking's non-date fields once a manager
+placed it there), a manager's Friday override succeeding, and direct client
+writes to `bookings`/`slots`/`recurringSchedules`/`recurringExceptions` being
+rejected outright regardless of role or payload.
 
 ## Known limitations
 
-- The "only a manager may create an exceptional Friday booking" rule is
-  enforced by the application (the Manager Future Booking form is the only UI
-  path that can select a Friday date) rather than by a Firestore rule, because
-  the `date` field is stored as a plain `yyyy-MM-dd` string and Firestore's
-  rules language has no reliable way to derive day-of-week from a string
-  without a fragile hand-rolled calendar algorithm. Firestore rules do still
-  validate every other field on that write (role, enums, required fields).
 - Reports scans all active bookings in the selected date range and applies the
   worker/area/paid/payment-method/shift filters client-side, rather than
   maintaining a composite Firestore index for every filter combination. This

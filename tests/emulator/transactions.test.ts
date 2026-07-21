@@ -1,89 +1,66 @@
+import { initializeApp, getApps, deleteApp, type App } from "firebase-admin/app";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  initializeTestEnvironment,
-  type RulesTestEnvironment,
-} from "@firebase/rules-unit-testing";
-import { readFileSync } from "node:fs";
-import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, type Firestore } from "firebase/firestore";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { BookingConflictError, cancelBooking, createBooking, markBookingPaid, updateBookingFields } from "@/lib/booking";
+  BookingConflictError,
+  createBookingServer,
+  cancelBookingServer,
+  FridayRestrictedError,
+  markBookingPaidServer,
+  ServiceError,
+  updateBookingServer,
+  type Actor,
+} from "@/lib/server/bookingService";
+import {
+  cancelRecurringOccurrenceServer,
+  createRecurringScheduleServer,
+  editRecurringOccurrenceServer,
+} from "@/lib/server/recurringService";
 import { resolveCell } from "@/lib/availability";
 import { addDaysToDateStr, todayBahrain } from "@/lib/date";
-import { cancelRecurringOccurrence, createRecurringSchedule, editRecurringOccurrence } from "@/lib/recurring";
 import type { RecurringSchedule, Worker } from "@/lib/types";
 
-const PROJECT_ID = "demo-maid-mgmt-tx";
-let testEnv: RulesTestEnvironment;
+/**
+ * These tests exercise the trusted server layer directly (the same
+ * functions the API routes under src/app/api/bookings and
+ * src/app/api/recurring call) against the Firestore emulator, using the
+ * Admin SDK exactly like production does. This is deliberately NOT a
+ * client-SDK / Firestore-rules test — the point is to prove the
+ * authorization decision (in particular, the Friday-exceptional-booking
+ * restriction) is enforced in code that a client can never bypass, not by
+ * something the client sends. Direct client write rejection is covered
+ * separately in tests/emulator/rules.test.ts.
+ */
 
-const MANAGER = { uid: "mgr", email: "mgr@example.com", name: "المدير" };
-const EMPLOYEE = { uid: "emp", email: "emp@example.com", name: "الموظفة" };
+let app: App;
+let db: Firestore;
 
-beforeAll(async () => {
-  testEnv = await initializeTestEnvironment({
-    projectId: PROJECT_ID,
-    firestore: {
-      rules: readFileSync("firestore.rules", "utf8"),
-      host: "127.0.0.1",
-      port: 8080,
-    },
-  });
+const WEEKDAY_DATE = "2026-07-22"; // Wednesday
+const FRIDAY_DATE = "2026-07-24"; // Friday
+const ANOTHER_WEEKDAY_DATE = "2026-07-23"; // Thursday
+
+const MANAGER: Actor = { uid: "mgr", email: "mgr@example.com", name: "المدير", role: "manager" };
+const EMPLOYEE: Actor = { uid: "emp", email: "emp@example.com", name: "الموظفة", role: "employee" };
+
+beforeAll(() => {
+  const existing = getApps().find((a) => a.name === "tx-test-app");
+  app = existing ?? initializeApp({ projectId: "demo-maid-mgmt-tx" }, "tx-test-app");
+  db = getFirestore(app);
 });
 
 afterAll(async () => {
-  await testEnv.cleanup();
+  await deleteApp(app);
 });
 
-afterEach(async () => {
-  await testEnv.clearFirestore();
-});
-
-async function seedBaseData() {
-  await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    const db = ctx.firestore();
-    await setDoc(doc(db, "users", MANAGER.uid), {
-      email: MANAGER.email,
-      name: MANAGER.name,
-      role: "manager",
-      active: true,
-      createdAt: serverTimestamp(),
-      createdBy: "seed",
-      updatedAt: serverTimestamp(),
-      updatedBy: "seed",
-    });
-    await setDoc(doc(db, "users", EMPLOYEE.uid), {
-      email: EMPLOYEE.email,
-      name: EMPLOYEE.name,
-      role: "employee",
-      active: true,
-      createdAt: serverTimestamp(),
-      createdBy: "seed",
-      updatedAt: serverTimestamp(),
-      updatedBy: "seed",
-    });
-    await setDoc(doc(db, "workers", "w1"), {
-      name: "سارة",
-      phone: "3300000",
-      active: true,
-      createdBy: "seed",
-      createdAt: serverTimestamp(),
-      updatedBy: "seed",
-      updatedAt: serverTimestamp(),
-    });
-  });
+async function clearCollections() {
+  for (const name of ["bookings", "slots", "recurringSchedules", "recurringExceptions", "activityLogs"]) {
+    const snap = await db.collection(name).get();
+    await Promise.all(snap.docs.map((d) => d.ref.delete()));
+  }
 }
 
-// @firebase/rules-unit-testing types firestore() as the compat SDK, but at
-// runtime it returns a modular-compatible instance (their own docs use it
-// directly with modular doc()/collection()); cast to align with our lib's
-// modular Firestore parameter type.
-function managerDb(): Firestore {
-  return testEnv.authenticatedContext(MANAGER.uid).firestore() as unknown as Firestore;
-}
-function employeeDb(): Firestore {
-  return testEnv.authenticatedContext(EMPLOYEE.uid).firestore() as unknown as Firestore;
-}
-
-const BASE_BOOKING_INPUT = {
-  date: "2026-08-05", // a Wednesday
+const BASE_INPUT = {
+  date: WEEKDAY_DATE,
   shift: "morning" as const,
   workerId: "w1",
   workerName: "سارة",
@@ -98,183 +75,244 @@ const BASE_BOOKING_INPUT = {
   recurringSeriesId: null,
 };
 
-describe("createBooking — double-booking prevention", () => {
-  it("creates a booking and locks the slot", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-    const snap = await getDoc(doc(db, "bookings", id));
-    expect(snap.exists()).toBe(true);
-    const slotSnap = await getDoc(doc(db, "slots", "w1_2026-08-05_morning"));
-    expect(slotSnap.exists()).toBe(true);
+describe("createBookingServer — Friday exceptional booking authorization", () => {
+  it("lets an employee create a normal weekday booking", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.exists).toBe(true);
+    expect(snap.data()?.status).toBe("active");
   });
 
-  it("rejects a second booking for the same worker/date/shift with the required Arabic message", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
+  it("rejects an employee creating a booking on Friday, and writes nothing", async () => {
+    await clearCollections();
+    await expect(createBookingServer(db, { ...BASE_INPUT, date: FRIDAY_DATE }, EMPLOYEE)).rejects.toThrow(
+      FridayRestrictedError
+    );
 
-    await expect(createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE })).rejects.toThrow(
-      BookingConflictError
-    );
-    await expect(createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE })).rejects.toThrow(
-      "تم حجز العاملة للتو، اختر عاملة أخرى."
-    );
+    const bookings = await db.collection("bookings").get();
+    const slots = await db.collection("slots").get();
+    expect(bookings.size).toBe(0);
+    expect(slots.size).toBe(0);
   });
 
-  it("allows booking a different shift on the same date for the same worker", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-    const secondId = await createBooking(db, {
-      ...BASE_BOOKING_INPUT,
-      shift: "afternoon",
-      actingUser: EMPLOYEE,
-    });
-    expect(secondId).toBeTruthy();
+  it("lets a manager create the exceptional Friday booking", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: FRIDAY_DATE }, MANAGER);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.exists).toBe(true);
+    expect(snap.data()?.date).toBe(FRIDAY_DATE);
   });
 
-  it("resolves two concurrent booking attempts with exactly one winner", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-
-    const results = await Promise.allSettled([
-      createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE }),
-      createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: MANAGER }),
-    ]);
-
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-
-    const activeBookings = await getDocs(
-      query(collection(db, "bookings"), where("status", "==", "active"))
-    );
-    expect(activeBookings.size).toBe(1);
+  it("rejects even a well-formed request claiming manager role is irrelevant — the server derives role, not the payload", async () => {
+    // The Actor object here stands in for what getServerSession() returns
+    // from the verified cookie; nothing about the booking input itself
+    // (source, etc.) can influence the authorization decision.
+    await clearCollections();
+    await expect(
+      createBookingServer(db, { ...BASE_INPUT, date: FRIDAY_DATE, source: "manager_future" }, EMPLOYEE)
+    ).rejects.toThrow(FridayRestrictedError);
   });
 });
 
-describe("cancelBooking — releases availability", () => {
-  it("deletes the slot lock so the worker becomes bookable again", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
+describe("updateBookingServer — moving a booking into Friday", () => {
+  it("rejects an employee moving an existing booking onto a Friday date", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
 
-    await cancelBooking(db, id, { reason: null, actingUser: EMPLOYEE, cancelScope: "single" });
+    await expect(
+      updateBookingServer(
+        db,
+        id,
+        {
+          areaId: BASE_INPUT.areaId,
+          areaName: BASE_INPUT.areaName,
+          hours: BASE_INPUT.hours,
+          amount: BASE_INPUT.amount,
+          paymentMethod: null,
+          customerPhone: BASE_INPUT.customerPhone,
+          customerLocation: BASE_INPUT.customerLocation,
+          date: FRIDAY_DATE,
+        },
+        EMPLOYEE
+      )
+    ).rejects.toThrow(FridayRestrictedError);
 
-    const slotSnap = await getDoc(doc(db, "slots", "w1_2026-08-05_morning"));
-    expect(slotSnap.exists()).toBe(false);
-
-    const newId = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-    expect(newId).toBeTruthy();
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.date).toBe(WEEKDAY_DATE); // unchanged
+    const fridaySlot = await db.collection("slots").doc(`w1_${FRIDAY_DATE}_morning`).get();
+    expect(fridaySlot.exists).toBe(false);
   });
 
-  it("excludes cancelled bookings from active-status queries used by reports", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-    await cancelBooking(db, id, { reason: "طلب العميل", actingUser: EMPLOYEE, cancelScope: "single" });
+  it("lets a manager move a booking onto a Friday date", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, MANAGER);
 
-    const activeBookings = await getDocs(
-      query(collection(db, "bookings"), where("status", "==", "active"))
-    );
-    expect(activeBookings.size).toBe(0);
-
-    const cancelledSnap = await getDoc(doc(db, "bookings", id));
-    expect(cancelledSnap.data()?.status).toBe("cancelled");
-    expect(cancelledSnap.data()?.cancelledReason).toBe("طلب العميل");
-  });
-});
-
-describe("updateBookingFields", () => {
-  it("edits area/hours/amount without touching the worker/date/shift slot", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-
-    await updateBookingFields(
+    await updateBookingServer(
       db,
       id,
       {
-        areaId: "a2",
+        areaId: BASE_INPUT.areaId,
+        areaName: BASE_INPUT.areaName,
+        hours: BASE_INPUT.hours,
+        amount: BASE_INPUT.amount,
+        paymentMethod: null,
+        customerPhone: BASE_INPUT.customerPhone,
+        customerLocation: BASE_INPUT.customerLocation,
+        date: FRIDAY_DATE,
+      },
+      MANAGER
+    );
+
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.date).toBe(FRIDAY_DATE);
+  });
+
+  it("still lets an employee edit non-slot fields of a booking a manager already placed on Friday", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: FRIDAY_DATE }, MANAGER);
+
+    await updateBookingServer(
+      db,
+      id,
+      {
+        areaId: BASE_INPUT.areaId,
         areaName: "الرفاع",
         hours: 6,
         amount: 18,
         paymentMethod: "cash",
-        customerPhone: "36000001",
-        customerLocation: "بجانب المسجد",
+        customerPhone: BASE_INPUT.customerPhone,
+        customerLocation: BASE_INPUT.customerLocation,
       },
       EMPLOYEE
     );
 
-    const snap = await getDoc(doc(db, "bookings", id));
+    const snap = await db.collection("bookings").doc(id).get();
     expect(snap.data()?.areaName).toBe("الرفاع");
-    expect(snap.data()?.hours).toBe(6);
-    expect(snap.data()?.paid).toBe(true);
-
-    const slotSnap = await getDoc(doc(db, "slots", "w1_2026-08-05_morning"));
-    expect(slotSnap.exists()).toBe(true);
+    expect(snap.data()?.date).toBe(FRIDAY_DATE);
   });
 });
 
-describe("markBookingPaid — unpaid to paid transition", () => {
-  it("lets a manager mark a booking paid and stores the audit trail", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
-
-    const mgrDb = managerDb();
-    await markBookingPaid(mgrDb, id, { paymentMethod: "benefit", actingUser: MANAGER });
-
-    const snap = await getDoc(doc(managerDb(), "bookings", id));
-    expect(snap.data()?.paid).toBe(true);
-    expect(snap.data()?.paymentMethod).toBe("benefit");
-    expect(snap.data()?.paymentBy).toBe(MANAGER.uid);
+describe("createBookingServer — double-booking prevention", () => {
+  it("rejects a second booking for the same worker/date/shift", async () => {
+    await clearCollections();
+    await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await expect(createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE)).rejects.toThrow(
+      BookingConflictError
+    );
   });
 
-  it("removes the booking from the unpaid set once marked paid", async () => {
-    await seedBaseData();
-    const db = employeeDb();
-    const id = await createBooking(db, { ...BASE_BOOKING_INPUT, actingUser: EMPLOYEE });
+  it("resolves two concurrent booking attempts for the same slot with exactly one winner", async () => {
+    await clearCollections();
+    const results = await Promise.allSettled([
+      createBookingServer(db, { ...BASE_INPUT, date: ANOTHER_WEEKDAY_DATE }, EMPLOYEE),
+      createBookingServer(db, { ...BASE_INPUT, date: ANOTHER_WEEKDAY_DATE }, MANAGER),
+    ]);
 
-    let unpaid = await getDocs(query(collection(db, "bookings"), where("paid", "==", false)));
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
+
+    const active = await db
+      .collection("bookings")
+      .where("date", "==", ANOTHER_WEEKDAY_DATE)
+      .where("status", "==", "active")
+      .get();
+    expect(active.size).toBe(1);
+  });
+});
+
+describe("cancelBookingServer — releases availability", () => {
+  it("deletes the slot lock so the worker becomes bookable again", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+
+    await cancelBookingServer(db, id, { reason: null, cancelScope: "single" }, EMPLOYEE);
+
+    const slotSnap = await db.collection("slots").doc(`w1_${WEEKDAY_DATE}_morning`).get();
+    expect(slotSnap.exists).toBe(false);
+
+    const newId = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    expect(newId).toBeTruthy();
+  });
+});
+
+describe("markBookingPaidServer — unpaid to paid transition", () => {
+  it("records who marked the booking paid and removes it from the unpaid set", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+
+    let unpaid = await db.collection("bookings").where("paid", "==", false).get();
     expect(unpaid.size).toBe(1);
 
-    await markBookingPaid(managerDb(), id, { paymentMethod: "benefit", actingUser: MANAGER });
+    await markBookingPaidServer(db, id, { paymentMethod: "benefit" }, MANAGER);
 
-    unpaid = await getDocs(query(collection(db, "bookings"), where("paid", "==", false)));
+    unpaid = await db.collection("bookings").where("paid", "==", false).get();
     expect(unpaid.size).toBe(0);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.paymentBy).toBe(MANAGER.uid);
   });
 });
 
-describe("recurring schedules — future availability without pre-generating weeks", () => {
-  it("computes availability for a date months ahead from the schedule alone", async () => {
-    await seedBaseData();
-    const mgrDb = managerDb();
+describe("recurring schedules — server-side materialization and future availability", () => {
+  it("rejects a non-manager from creating a recurring schedule", async () => {
+    await clearCollections();
+    await expect(
+      createRecurringScheduleServer(
+        db,
+        {
+          workerId: "w1",
+          workerName: "سارة",
+          areaId: "a1",
+          areaName: "المنامة",
+          shift: "morning",
+          dayOfWeek: 3,
+          hours: 4,
+          amount: 12,
+          paymentMethod: null,
+          customerPhone: "",
+          customerLocation: "",
+          startDate: todayBahrain(),
+        },
+        EMPLOYEE
+      )
+    ).rejects.toThrow(ServiceError);
+  });
+
+  it("computes availability for a date months ahead from the schedule alone (no pre-generated documents)", async () => {
+    await clearCollections();
     const today = todayBahrain();
+    const recurringId = await createRecurringScheduleServer(
+      db,
+      {
+        workerId: "w1",
+        workerName: "سارة",
+        areaId: "a1",
+        areaName: "المنامة",
+        shift: "morning",
+        dayOfWeek: 3, // Wednesday
+        hours: 4,
+        amount: 12,
+        paymentMethod: null,
+        customerPhone: "",
+        customerLocation: "",
+        startDate: today,
+      },
+      MANAGER
+    );
 
-    const recurringId = await createRecurringSchedule(mgrDb, {
-      workerId: "w1",
-      workerName: "سارة",
-      areaId: "a1",
-      areaName: "المنامة",
-      shift: "morning",
-      dayOfWeek: 3, // Wednesday
-      hours: 4,
-      amount: 12,
-      paymentMethod: null,
-      customerPhone: "",
-      customerLocation: "",
-      startDate: today,
-      actingUser: MANAGER,
-    });
-
-    const scheduleSnap = await getDoc(doc(mgrDb, "recurringSchedules", recurringId));
+    const scheduleSnap = await db.collection("recurringSchedules").doc(recurringId).get();
     const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
-    const worker: Worker = { id: "w1", name: "سارة", phone: "", active: true, createdAt: null, createdBy: "", updatedAt: null, updatedBy: "" };
+    const worker: Worker = {
+      id: "w1",
+      name: "سارة",
+      phone: "",
+      active: true,
+      createdAt: null,
+      createdBy: "",
+      updatedAt: null,
+      updatedBy: "",
+    };
 
-    // Find the next Wednesday at least 6 months out — no booking documents exist for it.
     let farDate = addDaysToDateStr(today, 182);
     while (new Date(`${farDate}T00:00:00Z`).getUTCDay() !== 3) {
       farDate = addDaysToDateStr(farDate, 1);
@@ -282,96 +320,108 @@ describe("recurring schedules — future availability without pre-generating wee
 
     const result = resolveCell(worker, farDate, "morning", [], [schedule], []);
     expect(result.status).toBe("booked");
-    expect(result.virtualOccurrence?.recurring.id).toBe(recurringId);
 
-    const bookingsSnap = await getDocs(collection(mgrDb, "bookings"));
+    const bookingsSnap = await db.collection("bookings").get();
     expect(bookingsSnap.size).toBe(0);
   });
 
   it("materializes a single-occurrence edit without duplicating future dates", async () => {
-    await seedBaseData();
-    const mgrDb = managerDb();
-    const recurringId = await createRecurringSchedule(mgrDb, {
-      workerId: "w1",
-      workerName: "سارة",
-      areaId: "a1",
-      areaName: "المنامة",
-      shift: "morning",
-      dayOfWeek: 3,
-      hours: 4,
-      amount: 12,
-      paymentMethod: null,
-      customerPhone: "",
-      customerLocation: "",
-      startDate: "2026-07-01",
-      actingUser: MANAGER,
-    });
-    const scheduleSnap = await getDoc(doc(mgrDb, "recurringSchedules", recurringId));
-    const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
-
-    await editRecurringOccurrence(mgrDb, {
-      recurring: schedule,
-      date: "2026-08-05", // a Wednesday matching the pattern
-      scope: "single",
-      fields: {
-        areaId: "a2",
-        areaName: "الرفاع",
-        hours: 5,
-        amount: 15,
-        paymentMethod: "cash",
+    await clearCollections();
+    const recurringId = await createRecurringScheduleServer(
+      db,
+      {
+        workerId: "w1",
+        workerName: "سارة",
+        areaId: "a1",
+        areaName: "المنامة",
+        shift: "morning",
+        dayOfWeek: 3,
+        hours: 4,
+        amount: 12,
+        paymentMethod: null,
         customerPhone: "",
         customerLocation: "",
+        startDate: "2026-07-01",
       },
-      actingUser: MANAGER,
-    });
-
-    const bookingsSnap = await getDocs(
-      query(collection(mgrDb, "bookings"), where("recurringSeriesId", "==", recurringId))
+      MANAGER
     );
+    const scheduleSnap = await db.collection("recurringSchedules").doc(recurringId).get();
+    const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
+
+    await editRecurringOccurrenceServer(
+      db,
+      {
+        recurring: schedule,
+        date: "2026-08-05", // a Wednesday matching the pattern
+        scope: "single",
+        fields: {
+          areaId: "a2",
+          areaName: "الرفاع",
+          hours: 5,
+          amount: 15,
+          paymentMethod: "cash",
+          customerPhone: "",
+          customerLocation: "",
+        },
+      },
+      MANAGER
+    );
+
+    const bookingsSnap = await db
+      .collection("bookings")
+      .where("recurringSeriesId", "==", recurringId)
+      .get();
     expect(bookingsSnap.size).toBe(1);
     expect(bookingsSnap.docs[0].data().areaName).toBe("الرفاع");
-    expect(bookingsSnap.docs[0].data().hours).toBe(5);
   });
 
   it("cancelling a single occurrence adds an exception without affecting other weeks", async () => {
-    await seedBaseData();
-    const mgrDb = managerDb();
-    const recurringId = await createRecurringSchedule(mgrDb, {
-      workerId: "w1",
-      workerName: "سارة",
-      areaId: "a1",
-      areaName: "المنامة",
-      shift: "morning",
-      dayOfWeek: 3,
-      hours: 4,
-      amount: 12,
-      paymentMethod: null,
-      customerPhone: "",
-      customerLocation: "",
-      startDate: "2026-07-01",
-      actingUser: MANAGER,
-    });
-    const scheduleSnap = await getDoc(doc(mgrDb, "recurringSchedules", recurringId));
+    await clearCollections();
+    const recurringId = await createRecurringScheduleServer(
+      db,
+      {
+        workerId: "w1",
+        workerName: "سارة",
+        areaId: "a1",
+        areaName: "المنامة",
+        shift: "morning",
+        dayOfWeek: 3,
+        hours: 4,
+        amount: 12,
+        paymentMethod: null,
+        customerPhone: "",
+        customerLocation: "",
+        startDate: "2026-07-01",
+      },
+      MANAGER
+    );
+    const scheduleSnap = await db.collection("recurringSchedules").doc(recurringId).get();
     const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
-    const worker: Worker = { id: "w1", name: "سارة", phone: "", active: true, createdAt: null, createdBy: "", updatedAt: null, updatedBy: "" };
+    const worker: Worker = {
+      id: "w1",
+      name: "سارة",
+      phone: "",
+      active: true,
+      createdAt: null,
+      createdBy: "",
+      updatedAt: null,
+      updatedBy: "",
+    };
 
-    await cancelRecurringOccurrence(mgrDb, {
-      recurring: schedule,
-      date: "2026-08-05",
-      scope: "single",
-      reason: "إجازة العميل",
-      actingUser: MANAGER,
-    });
+    await cancelRecurringOccurrenceServer(
+      db,
+      { recurring: schedule, date: "2026-08-05", scope: "single", reason: "إجازة العميل" },
+      MANAGER
+    );
 
-    const exceptionSnap = await getDoc(doc(mgrDb, "recurringExceptions", `${recurringId}_2026-08-05`));
-    expect(exceptionSnap.exists()).toBe(true);
+    const exceptionSnap = await db.collection("recurringExceptions").doc(`${recurringId}_2026-08-05`).get();
+    expect(exceptionSnap.exists).toBe(true);
 
     const cancelledDateResult = resolveCell(worker, "2026-08-05", "morning", [], [schedule], [
       { id: exceptionSnap.id, ...exceptionSnap.data() } as never,
     ]);
     expect(cancelledDateResult.status).toBe("available");
 
-    // The following week's occurrence is unaffected.
     const nextWeekResult = resolveCell(worker, "2026-08-12", "morning", [], [schedule], []);
     expect(nextWeekResult.status).toBe("booked");
   });

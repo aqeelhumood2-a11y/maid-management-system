@@ -6,16 +6,14 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { SelectInput } from "@/components/ui/Field";
 import { EmptyState, ErrorBanner, Spinner } from "@/components/ui/Feedback";
-import { useAuth } from "@/context/AuthContext";
 import { formatDateAr, weekdayLabelAr } from "@/lib/date";
 import { getDb } from "@/lib/firebase/client";
-import { markBookingPaid } from "@/lib/booking";
+import { ApiError, markBookingPaid } from "@/lib/booking";
 import type { Booking, PaymentMethod, Shift } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
 
 export default function UnpaidBookingsPage() {
-  const { actingUser } = useAuth();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState<Booking | null>(null);
@@ -76,22 +74,12 @@ export default function UnpaidBookingsPage() {
         </div>
       )}
 
-      {marking && (
-        <MarkPaidModal booking={marking} onClose={() => setMarking(null)} actingUser={actingUser} />
-      )}
+      {marking && <MarkPaidModal booking={marking} onClose={() => setMarking(null)} />}
     </div>
   );
 }
 
-function MarkPaidModal({
-  booking,
-  onClose,
-  actingUser,
-}: {
-  booking: Booking;
-  onClose: () => void;
-  actingUser: { uid: string; email: string; name: string };
-}) {
+function MarkPaidModal({ booking, onClose }: { booking: Booking; onClose: () => void }) {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -100,10 +88,10 @@ function MarkPaidModal({
     setLoading(true);
     setError("");
     try {
-      await markBookingPaid(getDb(), booking.id, { paymentMethod, actingUser });
+      await markBookingPaid(booking.id, { paymentMethod });
       onClose();
-    } catch {
-      setError("تعذر تسجيل الدفع");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر تسجيل الدفع");
     } finally {
       setLoading(false);
     }

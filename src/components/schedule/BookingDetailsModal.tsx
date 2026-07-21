@@ -8,13 +8,12 @@ import { ErrorBanner } from "@/components/ui/Feedback";
 import { useAuth } from "@/context/AuthContext";
 import { useAreas } from "@/hooks/useAreas";
 import {
-  BookingConflictError,
+  ApiError,
   cancelBooking,
   updateBookingFields,
   type EditableBookingFields,
 } from "@/lib/booking";
 import { formatDateAr, weekdayLabelAr } from "@/lib/date";
-import { getDb } from "@/lib/firebase/client";
 import {
   cancelRecurringOccurrence,
   editRecurringOccurrence,
@@ -47,7 +46,7 @@ export function BookingDetailsModal({
   recurringSchedules: RecurringSchedule[];
   onSuccess: () => void;
 }) {
-  const { actingUser, user } = useAuth();
+  const { user } = useAuth();
   const [view, setView] = useState<View>("details");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -136,11 +135,11 @@ export function BookingDetailsModal({
             setLoading(true);
             setError("");
             try {
-              await updateBookingFields(getDb(), booking.id, fields, actingUser);
+              await updateBookingFields(booking.id, fields);
               onSuccess();
               close();
-            } catch {
-              setError("تعذر حفظ التعديل");
+            } catch (err) {
+              setError(err instanceof ApiError ? err.message : "تعذر حفظ التعديل");
             } finally {
               setLoading(false);
             }
@@ -157,11 +156,11 @@ export function BookingDetailsModal({
             setLoading(true);
             setError("");
             try {
-              await cancelBooking(getDb(), booking.id, { reason, actingUser, cancelScope: "single" });
+              await cancelBooking(booking.id, { reason, cancelScope: "single" });
               onSuccess();
               close();
-            } catch {
-              setError("تعذر إلغاء الحجز");
+            } catch (err) {
+              setError(err instanceof ApiError ? err.message : "تعذر إلغاء الحجز");
             } finally {
               setLoading(false);
             }
@@ -179,17 +178,16 @@ export function BookingDetailsModal({
             setLoading(true);
             setError("");
             try {
-              await editRecurringOccurrence(getDb(), {
+              await editRecurringOccurrence({
                 recurring,
                 date,
                 scope,
                 fields,
-                actingUser,
               });
               onSuccess();
               close();
             } catch (err) {
-              setError(err instanceof BookingConflictError ? err.message : "تعذر حفظ التعديل");
+              setError(err instanceof ApiError ? err.message : "تعذر حفظ التعديل");
             } finally {
               setLoading(false);
             }
@@ -206,11 +204,11 @@ export function BookingDetailsModal({
             setLoading(true);
             setError("");
             try {
-              await cancelRecurringOccurrence(getDb(), { recurring, date, scope, reason, actingUser });
+              await cancelRecurringOccurrence({ recurring, date, scope, reason });
               onSuccess();
               close();
-            } catch {
-              setError("تعذر إلغاء الموعد");
+            } catch (err) {
+              setError(err instanceof ApiError ? err.message : "تعذر إلغاء الموعد");
             } finally {
               setLoading(false);
             }
