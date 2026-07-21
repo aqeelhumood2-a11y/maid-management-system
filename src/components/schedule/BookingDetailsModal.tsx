@@ -5,7 +5,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
-import { useAuth } from "@/context/AuthContext";
+import { useManagerSession } from "@/context/ManagerSessionContext";
 import { useAreas } from "@/hooks/useAreas";
 import {
   ApiError,
@@ -46,7 +46,7 @@ export function BookingDetailsModal({
   recurringSchedules: RecurringSchedule[];
   onSuccess: () => void;
 }) {
-  const { user } = useAuth();
+  const { isManager } = useManagerSession();
   const [view, setView] = useState<View>("details");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -100,11 +100,11 @@ export function BookingDetailsModal({
           {isRecurring && (
             <div className="rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-800">
               هذا حجز ضمن جدول متكرر أسبوعي
-              {user.role !== "manager" ? " ويُدار من قبل المدير." : "."}
+              {!isManager ? " ويُدار من قبل المدير." : "."}
             </div>
           )}
 
-          {(!isRecurring || user.role === "manager") && (
+          {(!isRecurring || isManager) && (
             <div className="flex gap-3 pt-2">
               <Button
                 variant="secondary"

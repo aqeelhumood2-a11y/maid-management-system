@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/server";
+import { getActor } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { markBookingPaidServer, ServiceError } from "@/lib/server/bookingService";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession();
-  if (!session) return NextResponse.json({ error: "يجب تسجيل الدخول" }, { status: 401 });
-
   const { id } = await context.params;
   const body = (await request.json()) as { paymentMethod?: "benefit" | "cash" };
   if (body.paymentMethod !== "benefit" && body.paymentMethod !== "cash") {
@@ -14,7 +11,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    await markBookingPaidServer(getAdminDb(), id, { paymentMethod: body.paymentMethod }, session);
+    await markBookingPaidServer(getAdminDb(), id, { paymentMethod: body.paymentMethod }, await getActor());
     return NextResponse.json({ ok: true });
   } catch (err) {
     if (err instanceof ServiceError) {

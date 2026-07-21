@@ -1,22 +1,14 @@
 "use client";
 
-import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { useEffect, useState } from "react";
-import { getDb } from "@/lib/firebase/client";
+import { usePolledFetch } from "./usePolledFetch";
 import type { Area } from "@/lib/types";
 
 export function useAreas() {
-  const [areas, setAreas] = useState<Area[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const q = query(collection(getDb(), "areas"), orderBy("name"));
-    const unsub = onSnapshot(q, (snap) => {
-      setAreas(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Area));
-      setLoading(false);
-    });
-    return unsub;
+  const { data, loading } = usePolledFetch(async () => {
+    const res = await fetch("/api/areas");
+    const json = (await res.json()) as { areas?: Area[] };
+    return json.areas ?? [];
   }, []);
 
-  return { areas, loading };
+  return { areas: data ?? [], loading };
 }

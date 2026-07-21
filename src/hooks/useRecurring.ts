@@ -1,52 +1,24 @@
 "use client";
 
-import { collection, onSnapshot, query, where } from "firebase/firestore";
-import { useEffect, useState } from "react";
-import { getDb } from "@/lib/firebase/client";
+import { usePolledFetch } from "./usePolledFetch";
 import type { RecurringException, RecurringSchedule } from "@/lib/types";
 
 export function useRecurringSchedules() {
-  const [schedules, setSchedules] = useState<RecurringSchedule[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const q = query(collection(getDb(), "recurringSchedules"), where("status", "==", "active"));
-    const unsub = onSnapshot(q, (snap) => {
-      setSchedules(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as RecurringSchedule));
-      setLoading(false);
-    });
-    return unsub;
+  const { data, loading } = usePolledFetch(async () => {
+    const res = await fetch("/api/recurring");
+    const json = (await res.json()) as { schedules?: RecurringSchedule[] };
+    return json.schedules ?? [];
   }, []);
 
-  return { schedules, loading };
-}
-
-export function useAllRecurringSchedules() {
-  const [schedules, setSchedules] = useState<RecurringSchedule[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(getDb(), "recurringSchedules"), (snap) => {
-      setSchedules(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as RecurringSchedule));
-      setLoading(false);
-    });
-    return unsub;
-  }, []);
-
-  return { schedules, loading };
+  return { schedules: data ?? [], loading };
 }
 
 export function useRecurringExceptions() {
-  const [exceptions, setExceptions] = useState<RecurringException[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(getDb(), "recurringExceptions"), (snap) => {
-      setExceptions(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as RecurringException));
-      setLoading(false);
-    });
-    return unsub;
+  const { data, loading } = usePolledFetch(async () => {
+    const res = await fetch("/api/recurring/exceptions");
+    const json = (await res.json()) as { exceptions?: RecurringException[] };
+    return json.exceptions ?? [];
   }, []);
 
-  return { exceptions, loading };
+  return { exceptions: data ?? [], loading };
 }

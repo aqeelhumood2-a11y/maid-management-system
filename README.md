@@ -1,20 +1,29 @@
 # نظام إدارة العاملات — Maid Management System
 
 Production system for scheduling, booking and payment tracking for a maid/worker
-staffing office in Bahrain. Arabic RTL interface, mobile-first, real-time
-multi-user sync on Cloud Firestore.
+staffing office in Bahrain. Arabic RTL interface, mobile-first, live-updating
+schedule backed by Cloud Firestore.
 
 ## System overview
 
-Two roles — **Employee** and **Manager** — share one live schedule:
+The root URL is the **Employee screen** — no login, no account, nothing to
+enter. Anyone who opens the site sees the live schedule immediately:
 
-- **Employees** see two screens: **Today Schedule** and **Weekly Schedule**, a
-  color-coded grid (green/red/yellow/gray) of every active worker × morning/afternoon
-  shift. Clicking an available cell opens a quick booking form; clicking a booked
+- **Today Schedule** and **Weekly Schedule**, a color-coded grid
+  (green/red/yellow/gray) of every active worker × morning/afternoon shift.
+  Clicking an available cell opens a quick booking form; clicking a booked
   cell opens details with edit/cancel.
-- **Managers** additionally get a **Manager** section: Future Booking, Worker
-  Management, Recurring Weekly Schedule, Routes, Reports, Unpaid Bookings,
-  Activity History and Settings.
+- A small, unobtrusive **⚙︎** button in the header opens a manager password
+  prompt. The correct password opens the **Manager** section: Future
+  Booking, Worker Management, Recurring Weekly Schedule, Routes, Reports,
+  Unpaid Bookings, Activity History and Settings. A wrong password just
+  shows an inline error — the visitor stays on the Employee screen.
+
+There is no Firebase Authentication anywhere in this app, and no concept of
+individual employee or manager accounts. "Employee" access is simply
+"anyone with the URL"; "Manager" access is a single shared password, checked
+server-side. See **Manager access** and **Security approach** below for the
+full model and the trade-offs that come with it.
 
 Availability (green/red/yellow/gray) is never stored — it's computed on the fly
 from active bookings, recurring weekly schedules, single-occurrence exceptions,
@@ -25,30 +34,32 @@ any future date without pre-generating documents.
 
 - Next.js 16 (App Router, Turbopack, Proxy) + TypeScript
 - Tailwind CSS v4, Arabic RTL UI (Cairo font)
-- Firebase Authentication (Email/Password), Firebase Admin SDK for server routes
-- Cloud Firestore with real-time listeners
-- Vitest for unit tests, `@firebase/rules-unit-testing` + Firebase Emulator Suite
-  for security-rules/integration tests
+- Cloud Firestore, accessed **exclusively server-side** through the Firebase
+  Admin SDK — there is no client-side Firebase SDK of any kind in the app
+  bundle. The browser talks only to this app's own Next.js API routes.
+- Vitest for unit tests, `@firebase/rules-unit-testing` + Firebase Emulator
+  Suite for security-rules/integration tests
 - Deployed on Vercel
 
 ## Local setup
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in your Firebase web config (see below)
+cp .env.example .env.local   # fill in your Firebase Admin credentials (see below)
 npm run dev
 ```
 
 ## Firebase setup
 
-1. Create (or reuse) a Firebase project with **Firestore** and
-   **Authentication → Email/Password** enabled.
-2. Firebase Console → Project settings → General → "Your apps" → add a Web app,
-   copy the config into `.env.local` as the `NEXT_PUBLIC_FIREBASE_*` values.
-3. Firebase Console → Project settings → Service accounts → "Generate new
-   private key" → use the resulting `project_id` / `client_email` / `private_key`
-   for the `FIREBASE_ADMIN_*` variables (server-only, never commit these).
-4. Update `.firebaserc` — replace `REPLACE_WITH_FIREBASE_PROJECT_ID` with your
+This app only uses **Firestore** as a database — no Firebase Authentication
+product needs to be enabled at all.
+
+1. Create (or reuse) a Firebase project with **Firestore** enabled.
+2. Firebase Console → Project settings → Service accounts → "Generate new
+   private key" → use the resulting `project_id` / `client_email` /
+   `private_key` for the `FIREBASE_ADMIN_*` variables (server-only, never
+   commit these).
+3. Update `.firebaserc` — replace `REPLACE_WITH_FIREBASE_PROJECT_ID` with your
    real Firebase project id (used only by the `firebase` CLI, not by the app).
 
 ## Environment variables
@@ -57,96 +68,82 @@ See `.env.example` for the full list. Summary:
 
 | Variable | Used by | Notes |
 |---|---|---|
-| `NEXT_PUBLIC_FIREBASE_*` (6 vars) | Browser | Public Firebase Web config |
-| `FIREBASE_ADMIN_PROJECT_ID` | Server | Admin SDK |
+| `FIREBASE_ADMIN_PROJECT_ID` | Server | Admin SDK (Firestore only) |
 | `FIREBASE_ADMIN_CLIENT_EMAIL` | Server | Admin SDK, from the service account |
 | `FIREBASE_ADMIN_PRIVATE_KEY` | Server | Admin SDK; keep the `\n` escapes literal |
-| `NEXT_PUBLIC_USE_FIREBASE_EMULATOR` | Browser | Set `true` only for local emulator dev |
 
-No real secrets are committed to this repository.
+No real secrets are committed to this repository, **except** the manager
+password and session-signing secret described below — see **Manager
+access** for why those are handled differently.
 
-## First manager bootstrap
+## Manager access
 
-There is no public registration page, no setup page, and nothing to visit or
-configure by hand. The very first manager account is created automatically,
-server-side, with fixed values for this project:
+There is no login page, no setup flow, and nothing to configure by hand or
+via an environment variable. The entire manager surface is gated by one
+shared password, hardcoded server-side in `src/lib/server/managerAuth.ts`:
 
-- Email: `aqeelhumood2@gmail.com`
-- Name: `Aqeel`
-- A one-time bootstrap password, in `src/lib/server/bootstrapCredentials.ts`
-
-`completeFirstManagerSetup()` (`src/lib/server/setupService.ts`)
-unconditionally reconciles that one specific account — it reads the existing
-Firebase Auth user by email (creating it only as a fallback if it's genuinely
-missing), resets its password to the bootstrap password, sets the `role:
-manager` custom claim, writes `users/{uid}` (`role: manager, active: true,
-name: Aqeel, email: aqeelhumood2@gmail.com`), and seeds `settings/app` with
-`timezone: "Asia/Bahrain"` if missing. This runs exactly once, guarded by
-`settings/setupState.firstManagerCreated` — **and only that flag**. Some
-other, unrelated manager account existing does not block it: this account was
-originally created out-of-band (via `scripts/bootstrap-manager.ts`), which
-never touches `settings/setupState`, so an earlier version of this check
-("skip if any active manager already exists") would silently lock itself out
-without ever setting this account's password — which is exactly why sign-in
-kept failing with "Invalid email or password" even though the Auth user
-existed. The fix scopes the precondition to this account specifically.
-
-**The guaranteed trigger is `src/proxy.ts`**, not `instrumentation.ts`. An
-earlier version of this relied solely on Next.js's `instrumentation.ts`
-`register()` hook, which only fires when an actual Node.js server instance
-starts — but `/login` is a statically prerendered page whose sign-in form
-calls Firebase Auth directly from the browser, so on a platform that serves
-static routes from an edge cache, a visitor's entire session can complete
-(load `/login`, attempt to sign in, fail) without any Node.js server
-instance ever starting, and the hook never fires. Proxy runs on every
-matched request regardless of caching, so the bootstrap check now happens
-there — confirmed by hitting a freshly built `/login` page directly with
-nothing else running and seeing the account get created. `instrumentation.ts`
-still calls the same function as a harmless second attempt on
-platforms/requests where it does fire (e.g. self-hosted `next start`), since
-the permanent Firestore lock makes running it from two places safe.
-
-This is safe to run on every request that reaches Proxy, not just the first:
-
-- The check-and-claim is atomic: `completeFirstManagerSetup()` claims the
-  `settings/setupState` lock inside a Firestore transaction, so concurrent
-  requests can never both run the reconciliation, and once completed the
-  lock is never released. Firestore rules additionally block any client
-  (even an authenticated manager) from writing to `settings/setupState`
-  directly.
-- `src/proxy.ts` only actually attempts this once per warm server instance
-  (an in-memory flag short-circuits every request after the first), and a
-  hard 8-second timeout keeps a Firebase connectivity problem from ever
-  hanging a real request.
-- Firebase Admin credentials and the bootstrap password never reach the
-  browser; this all runs server-side, and the password lives only in
-  `src/lib/server/bootstrapCredentials.ts`.
-- A failure here (e.g. missing `FIREBASE_ADMIN_*` credentials) is caught and
-  logged to the server console — it can never block a request from being
-  served.
-
-**Sign in immediately after your first deploy** with `aqeelhumood2@gmail.com`
-and the bootstrap password from `src/lib/server/bootstrapCredentials.ts`,
-then **change the password right away** from within the app — it's a real
-credential sitting in this repository's source and git history, not a secret.
-
-For any environment where you'd rather not hardcode a password in source at
-all (e.g. a separate non-production project), `scripts/bootstrap-manager.ts`
-remains available as a manual, parameterized alternative:
-
-```bash
-# Against production Firebase (uses FIREBASE_ADMIN_* env vars):
-npm run bootstrap:manager -- --email manager@example.com --password 'Str0ngPass1' --name "اسم المدير"
-
-# Against the local emulator instead, set these first:
-export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
-export FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
-npm run bootstrap:manager -- --email manager@example.com --password 'Str0ngPass1' --name "اسم المدير"
+```
+33199666
 ```
 
-It performs the same create-or-update/claim/`users/{uid}`/`settings/app`
-steps directly, and is idempotent, but does not touch or check
-`settings/setupState` — it's independent of the automatic startup bootstrap.
+- `POST /api/manager/login` checks the submitted password against this
+  constant using a **timing-safe comparison** (`crypto.timingSafeEqual`),
+  never a plain `===`. It is never sent to, compared in, or hardcoded into
+  any client-side ("use client") code — the browser only ever sends the
+  password the visitor typed, over HTTPS, and receives a cookie back.
+- On a match, the server issues a **signed, expiring session token**
+  (HMAC-SHA256 over an expiry timestamp, keyed by a second server-only
+  secret in the same file) and sets it as an `httpOnly` cookie. This is not
+  a JWT library or Firebase Auth under the hood — it's ~60 lines of plain
+  Node `crypto`, verified in `src/lib/server/managerAuth.ts` and unit-tested
+  in `tests/unit/managerAuth.test.ts` (round-trip, tampered payload,
+  tampered signature, expiry).
+- A wrong password returns `401` and sets no cookie; the visitor simply
+  stays on the Employee screen with an inline error, exactly as specified.
+- Repeated wrong attempts from the same IP are throttled (8 attempts / 10
+  minutes, in-memory) as a speed bump against casual brute-forcing — note
+  this resets on a cold serverless start and isn't shared across instances,
+  so treat it as a deterrent, not a hard guarantee, for an 8-digit password.
+- `src/proxy.ts` does a fast, optimistic signature+expiry check on every
+  `/manager/*` request and redirects to `/` if it fails; `src/app/manager/layout.tsx`
+  (a Server Component) re-checks the exact same thing authoritatively on
+  every request — Proxy is a UX shortcut, not the security boundary.
+- Logging out (`DELETE /api/manager/login`) just clears the cookie.
+
+**Change the password** by editing `MANAGER_PASSWORD` in
+`src/lib/server/managerAuth.ts` and redeploying — it is deliberately not an
+environment variable, matching this project's established pattern of
+committed, rotatable one-time/shared credentials over adding new Vercel
+config steps.
+
+## Data access model
+
+Employees have no identity at all, so Firestore Security Rules have nothing
+left to authorize a direct client read or write against (`request.auth` is
+always null — there is no more Firebase Authentication to populate it).
+Rather than opening Firestore's rules to public read — which would make
+every booking's customer phone number and location directly, publicly
+queryable by anyone who can reach the Firestore project, not just visitors
+to this site — **all reads and writes go through this app's own Next.js API
+routes**, which use the Admin SDK server-side:
+
+- `firestore.rules` denies **all** direct client read/write access,
+  unconditionally, for every collection (`allow read, write: if false`).
+  Verified in `tests/emulator/rules.test.ts` for every collection, for both
+  an unauthenticated client and one merely claiming an arbitrary uid.
+- Reads that used to be Firestore `onSnapshot` real-time listeners
+  (`useAreas`, `useWorkers`, `useBookingsForDates`, `useRecurringSchedules`,
+  `useRecurringExceptions`, `useSettings` — see `src/hooks/`) now poll their
+  corresponding `GET` API route every ~4 seconds
+  (`src/hooks/usePolledFetch.ts`). The schedule still updates live for every
+  connected client, just on a short interval instead of an instant push —
+  the one behavior change this redesign required, and the trade-off made
+  explicitly to keep customer PII off the public internet.
+- Writes to `bookings`/`slots`/`recurringSchedules`/`recurringExceptions`
+  were already Admin-SDK-only from an earlier security fix; this redesign
+  extends the same pattern to `areas`, `workers` and `settings`, which used
+  to be written directly from the browser under Firestore rules keyed on
+  Firebase Auth custom claims (see `src/lib/server/catalogService.ts`).
 
 ## Firestore rules & indexes deployment
 
@@ -161,22 +158,23 @@ is configured by hand in the console.
 ## Emulator usage
 
 ```bash
-npx firebase emulators:start --only firestore,auth
+npx firebase emulators:start --only firestore
 ```
 
-UI: http://127.0.0.1:4000. The app itself can also point at the emulators for
-local dev by setting `NEXT_PUBLIC_USE_FIREBASE_EMULATOR=true` in `.env.local`.
+UI: http://127.0.0.1:4000. Only the Firestore emulator is needed — there is
+no Firebase Authentication to emulate. Point the app at it locally by
+setting `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` before `npm run dev`.
 
 ## Test commands
 
 ```bash
-npm run test          # unit tests (pure availability/date/recurring logic)
-npm run test:emulator # Firestore rules + booking-transaction integration tests
-                       # (spins up the emulator via `firebase emulators:exec`)
+npm run test           # unit tests (pure availability/date/recurring logic + managerAuth)
+npm run test:emulator  # Firestore rules + server booking/recurring/catalog service tests
+                        # (spins up the Firestore emulator via `firebase emulators:exec`)
 npm run test:all       # both, sequentially
 npm run lint
 npm run typecheck
-npm run build          # production build
+npm run build           # production build
 ```
 
 ## Production build
@@ -189,28 +187,29 @@ npm start
 ## Vercel deployment
 
 1. Import this repository into Vercel. `vercel.json` at the repo root pins
-   `"framework": "nextjs"`, so Vercel builds it with the Next.js builder
-   (`.next` / Vercel's serverless/edge output) instead of expecting a static
-   `public` output directory — if the project's dashboard **Framework
-   Preset** was ever set to something other than "Next.js" (or the Output
-   Directory field was manually overridden), correct it to "Next.js" and
-   clear any custom Output Directory override; `vercel.json` overrides these
-   dashboard build settings, but a stale custom Output Directory can still
-   surface as `Error: No Output Directory named "public"` on some setups.
-2. Add the environment variables listed above (`NEXT_PUBLIC_FIREBASE_*` and
-   `FIREBASE_ADMIN_*`) in Vercel → Project → Settings → Environment Variables,
-   for Production (and Preview if desired).
+   `"framework": "nextjs"`, so Vercel builds it with the Next.js builder.
+2. Add the `FIREBASE_ADMIN_*` environment variables listed above in Vercel →
+   Project → Settings → Environment Variables, for Production (and Preview
+   if desired). No other environment variables are required — the manager
+   password is not an env var (see **Manager access**).
 3. Deploy. No build command changes are required — `next build` is used as-is.
 
-## User roles
+## Access model
 
-- **Employee** — Today Schedule, Weekly Schedule. Can create/edit/cancel plain
-  bookings from those two screens. Cannot reach `/manager/*` (blocked by Proxy,
-  by the manager layout's server-side session check, and by Firestore rules).
-- **Manager** — everything an employee has, plus the full `/manager` section:
-  Future Booking (manual date selection + Friday override), Worker Management,
-  Recurring Weekly Schedule, Routes, Reports, Unpaid Bookings, Activity History,
-  Settings (business name, areas, user accounts).
+- **Employee** (anyone with the URL) — Today Schedule, Weekly Schedule. Can
+  create/edit/cancel plain bookings from those two screens. Cannot reach
+  `/manager/*` (blocked by Proxy and by the manager layout's server-side
+  session check) and cannot create/move a booking onto a Friday date.
+- **Manager** (the shared password) — everything an employee has, plus the
+  full `/manager` section: Future Booking (manual date selection + Friday
+  override), Worker Management, Recurring Weekly Schedule, Routes, Reports,
+  Unpaid Bookings, Activity History, Settings (business name, areas).
+
+Since there are no individual accounts anymore, every action's audit trail
+(`activityLogs`, and `createdBy`/`updatedBy`/`cancelledBy` fields) is
+attributed to one of two fixed identities — `"employee"` / `"موظف"` or
+`"manager"` / `"المدير"` — rather than a named person. This is an intentional
+consequence of removing per-user login, not an oversight.
 
 ## Main workflows
 
@@ -222,14 +221,13 @@ npm start
   schedule (edit) or this date only / from this date onward (cancel) — matching
   the Arabic labels specified in the brief.
 - **Unpaid bookings**: manager marks a booking paid, selecting Benefit/Cash;
-  payment date and the acting user are recorded, and the booking disappears
-  from the unpaid list immediately for every connected client.
+  payment date is recorded, and the booking disappears from the unpaid list
+  on every connected client within one polling interval.
 - **Routes**: manager picks a date + shift and gets a copyable/callable list of
   worker → area → customer phone/location for active bookings only.
 
 ## Database design (Firestore collections)
 
-- `users/{uid}` — `email, name, role(employee|manager), active, createdAt/By, updatedAt/By`
 - `workers/{id}` — `name, phone, active, createdAt/By, updatedAt/By`
 - `areas/{id}` — `name, active, createdAt/By, updatedAt/By`
 - `bookings/{id}` — full booking record (date `yyyy-MM-dd`, shift, worker/area id
@@ -243,23 +241,21 @@ npm start
 - `recurringExceptions/{recurringId_date}` — marks one calendar date as
   cancelled out of a recurring pattern (single-occurrence edits instead
   materialize a concrete `bookings` document — see Concurrency below)
-- `activityLogs/{id}` — append-only audit trail (type, entity, acting user,
-  before/after snapshot, timestamp); manager-readable only, never editable
+- `activityLogs/{id}` — append-only audit trail (type, entity, acting
+  identity, before/after snapshot, timestamp); manager-only via
+  `GET /api/activity`
 - `settings/app` — `businessName, timezone` (fixed to `Asia/Bahrain`)
-- `settings/setupState` — permanent lock for the one-time automatic
-  first-manager bootstrap (`firstManagerCreated, status, claimedAt,
-  completedAt, managerUid`); written only by the Admin SDK, never by any
-  client (see First manager bootstrap above)
+
+There is no `users` collection — see **Access model** above.
 
 ## Concurrency and double-booking strategy
 
-`bookings`, `slots`, `recurringSchedules` and `recurringExceptions` are written
-**exclusively server-side**, through the Admin SDK
-(`src/lib/server/bookingService.ts` and `src/lib/server/recurringService.ts`),
-called only from the API routes under `src/app/api/bookings` and
-`src/app/api/recurring`. The client never writes to these collections
-directly — Firestore rules deny it outright (`allow write: if false`) — it
-only reads them in real time via `onSnapshot`.
+`bookings`, `slots`, `recurringSchedules`, `recurringExceptions`, `areas`,
+`workers` and `settings` are all written **exclusively server-side**, through
+the Admin SDK (`src/lib/server/bookingService.ts`, `recurringService.ts`,
+`catalogService.ts`), called only from this app's own API routes. The
+browser never writes to Firestore directly — `firestore.rules` denies it
+outright — and reads it only indirectly, through polled `GET` routes.
 
 Every booking's worker/date/shift maps to a deterministic Firestore document id
 `slots/{workerId}_{date}_{shift}`. Creating (or moving) a booking runs in a
@@ -274,7 +270,7 @@ transaction retry guarantees only one commit wins — the loser's transaction
 re-reads the now-existing slot doc and throws the conflict error instead of
 silently double-booking. Cancelling a booking deletes the slot document in the
 same transaction that marks the booking `cancelled`, releasing the worker for
-that slot immediately for every connected client via the real-time listener.
+that slot for every client on its next poll.
 
 Editing/cancelling a **recurring** occurrence that hasn't been booked yet for
 that specific date "materializes" it — the same server transaction creates a
@@ -283,62 +279,44 @@ ever pre-generating every future week's bookings.
 
 ## Security approach
 
-- Firebase Authentication (Email/Password only, no public sign-up).
-- A server-set **httpOnly session cookie** (created via `/api/session` after
-  client-side sign-in, verified with the Admin SDK) is the real page-access
-  boundary; Next.js Proxy (`src/proxy.ts`) only does a cheap *optimistic* peek
-  at the cookie for fast redirects, per Next 16's guidance that Proxy shouldn't
-  do slow/cryptographic work. The actual authorization check — full signature
-  verification plus a fresh Firestore `active`/`role` read — happens in the
-  `(protected)` and `manager` layouts' Server Components on every request, so a
-  deactivation takes effect on the very next navigation, not next login.
-- **All writes to `bookings`, `slots`, `recurringSchedules` and
-  `recurringExceptions` go through Admin-SDK API routes**, never straight from
-  the browser to Firestore. Each route calls `getServerSession()` to derive
-  the caller's verified `uid`/`role` from the session cookie — never from
-  anything the request body claims — and then calls into
-  `src/lib/server/bookingService.ts` / `recurringService.ts`, which:
-  - reject any attempt to **create a booking on a Friday date**, or to
-    **edit/move an existing booking so its date becomes a Friday**, unless
-    `actor.role === "manager"` (`FridayRestrictedError`, matching the
-    approved requirement that only a manager may create an exceptional
-    Friday booking);
-  - re-validate every field (shift/payment-method enums, positive
-    hours/amount, date shape) — nothing here trusts client-side form
-    validation;
-  - require `role === "manager"` for all recurring-schedule operations.
-
-  This was a deliberate fix: Firestore rules alone cannot reliably derive a
-  weekday from a plain `yyyy-MM-dd` string, so a rules-only implementation of
-  the Friday restriction could be bypassed by a client writing directly to
-  Firestore with the SDK. Routing every write through this server layer and
-  then denying direct client writes in `firestore.rules` closes that gap
-  entirely rather than trying to re-implement calendar math in the rules
-  language. See `tests/emulator/transactions.test.ts` for tests exercising
-  this directly (weekday booking, Friday rejection, move-to-Friday rejection,
-  manager override, concurrent double-booking) and
-  `tests/emulator/rules.test.ts` for tests proving direct client writes to
-  these four collections are rejected regardless of role or payload shape.
-- **Firestore security rules** (`firestore.rules`) are the remaining data-layer
-  boundary for the collections still written directly by clients (`workers`,
-  `areas`, `settings`, and the `activityLogs` audit trail for those actions):
-  role and active-status are re-read from each caller's own `users/{uid}`
-  document (not from a possibly-stale ID token claim), and write payloads are
-  validated field-by-field.
-- `users/{uid}` documents can **never** be written by any client — accounts are
-  only created/edited/activated through the Admin-SDK-backed `/api/users` route,
-  which is itself gated by `requireManagerSession()`. This is what makes
-  self-promotion impossible.
-- `activityLogs` are create-only for any active user (each entry is pinned to
-  the caller's own uid) and `allow update/delete: if false` unconditionally —
-  nobody, including a manager, can alter or delete history.
+- **No Firebase Authentication anywhere** — removed entirely, along with the
+  client Firebase SDK, the login page, per-user accounts, and the `users`
+  collection. See **Manager access** for what replaced it.
+- **Firestore is unreachable from the browser, period.** `firestore.rules`
+  denies all direct client read/write access to every collection, and every
+  actual read/write happens server-side under the Admin SDK, in Next.js API
+  routes. This is deliberately the strongest posture available (rather than
+  opening Firestore to public read) because bookings contain customer phone
+  numbers and locations — see **Data access model** above for the reasoning.
+- **The manager password is checked server-side only**, with a timing-safe
+  comparison, and is never present in any code that ships to the browser.
+  The resulting session cookie is `httpOnly`, signed (HMAC-SHA256) and
+  expiring — see **Manager access**.
+- **The Friday-exceptional-booking rule is enforced in the trusted server
+  layer**, not in Firestore rules or client-side validation: creating a
+  booking on a Friday, or moving an existing booking's date onto a Friday,
+  throws `FridayRestrictedError` unless the request carries a valid manager
+  session (`src/lib/server/bookingService.ts`). Firestore rules cannot
+  reliably derive a weekday from a plain `yyyy-MM-dd` string, so this can't
+  be implemented at the rules layer at all — routing every write through
+  this server layer and denying all direct client writes closes the gap
+  entirely. See `tests/emulator/transactions.test.ts` (weekday booking,
+  Friday rejection, move-to-Friday rejection, manager override, concurrent
+  double-booking) and `tests/emulator/rules.test.ts` (direct client access
+  denied for every collection).
+- Every write re-validates its own fields server-side (shift/payment-method
+  enums, positive hours/amount, date shape) — nothing trusts client-side
+  form validation.
+- `activityLogs` is append-only and manager-read-only
+  (`GET /api/activity`) — no route ever updates or deletes an entry.
 
 ## Implemented employee features
 
 Today Schedule and Weekly Schedule (with previous/current/next week
 navigation), quick booking on an available cell (area/hours/amount/payment
 method only — worker/date/shift are implicit), booking details with edit/cancel
-on a booked cell, Friday shown as a fixed holiday everywhere.
+on a booked cell, Friday shown as a fixed holiday everywhere. None of this
+requires any credential.
 
 ## Implemented manager features
 
@@ -349,46 +327,41 @@ scope), Routes (date+shift → worker/area/phone/location, active bookings only,
 tap-to-call), Reports (worker/area/date/date-range/week/month/paid/payment
 method/shift filters with totals and a reset button), Unpaid Bookings (mark
 paid with method + audit trail), Activity History (filterable, immutable),
-Settings (business name, area CRUD, user account creation/activation).
+Settings (business name, area CRUD).
 
 ## Tests and exact results
 
 ```
-npm run test           → 3 files, 22 tests passed  (date / availability / recurring pure logic)
-npm run test:emulator  → 3 files, 51 tests passed  (Firestore rules + server booking/recurring/
-                          setup services, run against the Firebase Emulator Suite via
-                          `firebase emulators:exec`)
+npm run test           → 4 files, 32 tests passed  (date / availability / recurring pure
+                          logic + managerAuth password/session-token unit tests)
+npm run test:emulator  → 3 files, 61 tests passed  (Firestore deny-all rules for every
+                          collection, server booking/recurring transaction tests, and
+                          server catalog (areas/workers/settings) tests — run against the
+                          Firebase Emulator Suite via `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
-npm run build           → succeeds (Turbopack production build, 24 routes)
+npm run build           → succeeds (Turbopack production build)
 ```
 
-Covered scenarios include: route/role protection expectations at the rules
-layer, worker activation/deactivation, automatic availability calculation,
-Friday holiday behavior, double-booking prevention under both sequential and
+Covered scenarios include: every collection denying direct client read/write
+regardless of claimed identity, automatic availability calculation, Friday
+holiday behavior, double-booking prevention under both sequential and
 concurrent attempts, cancellation releasing availability, recurring
 single-occurrence exceptions, future availability many months out with zero
-pre-generated documents, the unpaid→paid transition, and — for the Friday
-exceptional-booking authorization fix specifically — an employee's normal
-weekday booking succeeding, an employee's Friday booking being rejected, an
-employee being unable to move an existing booking onto a Friday date (while
-still being able to edit a Friday booking's non-date fields once a manager
-placed it there), a manager's Friday override succeeding, and direct client
-writes to `bookings`/`slots`/`recurringSchedules`/`recurringExceptions` being
-rejected outright regardless of role or payload.
-
-For the automatic first-manager bootstrap specifically
-(`tests/emulator/setup.test.ts`, using a real Admin Auth instance against the
-Auth emulator): a too-short password is rejected and creates nothing; a
-successful run creates the Auth user, sets the manager claim, writes
-`users/{uid}` and seeds `settings/app`; a second attempt is rejected once
-locked and leaves the original account untouched; an already-existing active
-manager (created some other way) locks the flow permanently without creating
-a duplicate account; and two concurrent attempts resolve to exactly one
-winner.
+pre-generated documents, the unpaid→paid transition, manager-only
+authorization for areas/workers/settings/recurring schedules, and — for the
+manager password session specifically — correct/incorrect password handling,
+tampered-payload and tampered-signature rejection, and expiry.
 
 ## Known limitations
 
+- Real-time updates are now polling-based (~4s interval) rather than an
+  instant Firestore push, a deliberate trade-off — see **Data access model**.
+- The manager password's brute-force throttle is in-memory per server
+  instance, so it resets on a cold serverless start and doesn't coordinate
+  across concurrent instances — a meaningful speed bump, not a guarantee,
+  for an 8-digit numeric password. Consider adding a durable rate limiter
+  (e.g. Firestore- or Redis-backed) if this becomes a real threat model.
 - Reports scans all active bookings in the selected date range and applies the
   worker/area/paid/payment-method/shift filters client-side, rather than
   maintaining a composite Firestore index for every filter combination. This

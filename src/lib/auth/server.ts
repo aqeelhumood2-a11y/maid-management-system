@@ -1,51 +1,38 @@
 import { cookies } from "next/headers";
-import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
-import { SESSION_COOKIE_NAME } from "./constants";
-import type { Role } from "@/lib/types";
+import {
+  isValidManagerSessionToken,
+  MANAGER_SESSION_COOKIE_NAME,
+} from "@/lib/server/managerAuth";
+import type { Actor } from "@/lib/server/bookingService";
 
-export interface ServerSession {
-  uid: string;
-  email: string;
-  name: string;
-  role: Role;
+/** True if the request carries a valid, unexpired manager session cookie. */
+export async function isManagerSession(): Promise<boolean> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(MANAGER_SESSION_COOKIE_NAME)?.value;
+  return isValidManagerSessionToken(token);
 }
+
+export const EMPLOYEE_ACTOR: Actor = {
+  uid: "employee",
+  email: "",
+  name: "موظف",
+  role: "employee",
+};
+
+export const MANAGER_ACTOR: Actor = {
+  uid: "manager",
+  email: "",
+  name: "المدير",
+  role: "manager",
+};
 
 /**
- * Fully verifies the session cookie (signature, expiry, revocation) and re-reads
- * the user's Firestore record so a deactivation or role change takes effect on the
- * very next request, not just on next login. This is the real authorization
- * boundary for pages — Proxy only does a cheap optimistic redirect.
+ * The acting identity for a request: the shared manager identity if the
+ * manager session cookie is present and valid, otherwise the anonymous
+ * employee identity. Every request has SOME actor — there is no
+ * "logged out" state for booking-capable routes, since employees were
+ * never logged in to begin with.
  */
-export async function getServerSession(): Promise<ServerSession | null> {
-  const cookieStore = await cookies();
-  const cookie = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  if (!cookie) return null;
-
-  try {
-    const decoded = await getAdminAuth().verifySessionCookie(cookie, true);
-    const userDoc = await getAdminDb().collection("users").doc(decoded.uid).get();
-    const userData = userDoc.data();
-    if (!userDoc.exists || !userData || userData.active === false) return null;
-    if (userData.role !== "employee" && userData.role !== "manager") return null;
-
-    return {
-      uid: decoded.uid,
-      email: userData.email ?? decoded.email ?? "",
-      name: userData.name ?? "",
-      role: userData.role as Role,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function requireManagerSession(): Promise<
-  { ok: true; session: ServerSession } | { ok: false; status: number; error: string }
-> {
-  const session = await getServerSession();
-  if (!session) return { ok: false, status: 401, error: "يجب تسجيل الدخول" };
-  if (session.role !== "manager") {
-    return { ok: false, status: 403, error: "هذا الإجراء متاح للمدير فقط" };
-  }
-  return { ok: true, session };
+export async function getActor(): Promise<Actor> {
+  return (await isManagerSession()) ? MANAGER_ACTOR : EMPLOYEE_ACTOR;
 }

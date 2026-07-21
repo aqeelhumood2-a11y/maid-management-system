@@ -1,4 +1,9 @@
-import type { Timestamp } from "firebase/firestore";
+export interface SerializedTimestamp {
+  _seconds: number;
+  _nanoseconds: number;
+}
+
+export type Timestamp = SerializedTimestamp;
 
 export type Role = "employee" | "manager";
 
@@ -13,18 +18,6 @@ export type BookingSource =
   | "recurring";
 
 export type BookingStatus = "active" | "cancelled";
-
-export interface AppUser {
-  uid: string;
-  email: string;
-  name: string;
-  role: Role;
-  active: boolean;
-  createdAt: Timestamp | null;
-  createdBy: string | null;
-  updatedAt: Timestamp | null;
-  updatedBy: string | null;
-}
 
 export interface Worker {
   id: string;
@@ -141,10 +134,7 @@ export type ActivityActionType =
   | "area_added"
   | "area_edited"
   | "area_deactivated"
-  | "user_added"
-  | "user_edited"
-  | "settings_updated"
-  | "first_manager_setup";
+  | "settings_updated";
 
 export interface ActivityLog {
   id: string;
@@ -164,15 +154,6 @@ export interface AppSettings {
   timezone: string;
   updatedAt: Timestamp | null;
   updatedBy: string | null;
-}
-
-/** settings/setupState — the permanent lock for the one-time first-manager setup flow. */
-export interface FirstManagerSetupState {
-  firstManagerCreated: boolean;
-  status: "pending" | "completed" | "locked-existing-manager";
-  claimedAt: Timestamp | null;
-  completedAt: Timestamp | null;
-  managerUid: string | null;
 }
 
 export type CellStatus = "available" | "booked" | "friday_holiday" | "inactive";

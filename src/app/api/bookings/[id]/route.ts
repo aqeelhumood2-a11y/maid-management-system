@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/server";
+import { getActor } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { ServiceError, updateBookingServer, type BookingPatch } from "@/lib/server/bookingService";
 
@@ -22,14 +22,11 @@ function pickEditableFields(body: Record<string, unknown>): Omit<BookingPatch, "
 }
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession();
-  if (!session) return NextResponse.json({ error: "يجب تسجيل الدخول" }, { status: 401 });
-
   const { id } = await context.params;
   const body = (await request.json()) as Record<string, unknown>;
 
   try {
-    await updateBookingServer(getAdminDb(), id, pickEditableFields(body), session);
+    await updateBookingServer(getAdminDb(), id, pickEditableFields(body), await getActor());
     return NextResponse.json({ ok: true });
   } catch (err) {
     if (err instanceof ServiceError) {

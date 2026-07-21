@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "@/lib/auth/server";
+import { getActor } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { ServiceError } from "@/lib/server/bookingService";
 import { cancelRecurringOccurrenceServer, type RecurringCancelScope } from "@/lib/server/recurringService";
@@ -13,9 +13,6 @@ interface CancelBody {
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-  const session = await getServerSession();
-  if (!session) return NextResponse.json({ error: "يجب تسجيل الدخول" }, { status: 401 });
-
   const { id } = await context.params;
   const body = (await request.json()) as CancelBody;
 
@@ -27,7 +24,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     await cancelRecurringOccurrenceServer(
       getAdminDb(),
       { recurring: body.recurring, date: body.date, scope: body.scope, reason: body.reason ?? null },
-      session
+      await getActor()
     );
     return NextResponse.json({ ok: true });
   } catch (err) {

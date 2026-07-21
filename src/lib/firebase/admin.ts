@@ -1,6 +1,13 @@
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
-import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
+
+/**
+ * Firestore (the database) only — there is no Firebase Authentication
+ * anywhere in this app. Deliberately never imports "firebase-admin/auth":
+ * that subpath pulls in jwks-rsa, which pulls in an ESM-only jose build
+ * that crashes under Node's CJS require() on some runtimes. Since nothing
+ * here ever needs it, it's simplest to just never load it.
+ */
 
 /**
  * Normalizes a private key pasted into a hosting provider's env var UI.
@@ -41,7 +48,7 @@ function getAdminApp(): App {
   const apps = getApps();
   if (apps.length) return apps[0];
 
-  if (process.env.FIREBASE_AUTH_EMULATOR_HOST || process.env.FIRESTORE_EMULATOR_HOST) {
+  if (process.env.FIRESTORE_EMULATOR_HOST) {
     return initializeApp({
       projectId:
         readEnv("FIREBASE_ADMIN_PROJECT_ID", "FIREBASE_PROJECT_ID") || "demo-maid-management",
@@ -63,10 +70,6 @@ function getAdminApp(): App {
   return initializeApp({
     credential: cert({ projectId, clientEmail, privateKey }),
   });
-}
-
-export function getAdminAuth() {
-  return getAuth(getAdminApp());
 }
 
 export function getAdminDb() {

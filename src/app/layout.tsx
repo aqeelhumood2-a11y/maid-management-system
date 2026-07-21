@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Cairo } from "next/font/google";
+import { isManagerSession } from "@/lib/auth/server";
+import { ManagerSessionProvider } from "@/context/ManagerSessionContext";
 import "./globals.css";
 
 const cairo = Cairo({
@@ -18,11 +20,13 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const isManager = await isManagerSession();
+
   return (
     <html lang="ar" dir="rtl" className={`${cairo.variable} h-full`}>
       <body className="flex min-h-full flex-col bg-slate-50 font-sans text-slate-900 antialiased">
-        {children}
+        <ManagerSessionProvider initialIsManager={isManager}>{children}</ManagerSessionProvider>
       </body>
     </html>
   );

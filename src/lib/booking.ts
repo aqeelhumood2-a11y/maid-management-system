@@ -4,9 +4,9 @@ import type { BookingSource, PaymentMethod, Shift } from "./types";
  * Thin client-side wrappers around the booking API routes. All actual writes
  * to `bookings`/`slots` happen server-side under the Admin SDK (see
  * src/lib/server/bookingService.ts) — the client never talks to Firestore
- * for these collections directly, and Firestore rules deny it outright.
- * Identity (`createdBy`, etc.) is derived server-side from the verified
- * session cookie, never from anything the client sends.
+ * directly at all, for any collection. Identity (`createdBy`, etc.) is
+ * derived server-side from the manager session cookie (or the anonymous
+ * employee identity when it's absent), never from anything the client sends.
  */
 
 export const BOOKING_CONFLICT_MESSAGE_AR = "تم حجز العاملة للتو، اختر عاملة أخرى.";
@@ -25,13 +25,6 @@ export class BookingConflictError extends ApiError {
     super(message, "SLOT_CONFLICT");
     this.name = "BookingConflictError";
   }
-}
-
-/** Kept for the other client-side write modules (workers/areas/settings) that still write directly to Firestore. */
-export interface ActingUser {
-  uid: string;
-  email: string;
-  name: string;
 }
 
 async function callApi(url: string, method: "POST" | "PATCH", body: unknown): Promise<Record<string, unknown>> {
