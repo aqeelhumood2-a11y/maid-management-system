@@ -19,12 +19,27 @@ const CELL_STYLES: Record<CellResolution["status"], string> = {
   inactive: "bg-slate-100 text-slate-400 cursor-default",
 };
 
-const CELL_LABELS: Record<CellResolution["status"], string> = {
+const CELL_LABELS: Record<Exclude<CellResolution["status"], "booked">, string> = {
   available: "متاحة",
-  booked: "محجوزة",
   friday_holiday: "إجازة",
   inactive: "غير نشطة",
 };
+
+const BOOKED_FALLBACK_LABEL = "محجوزة";
+
+/**
+ * Booked cells show the booking's typed area name instead of a generic
+ * "محجوزة" label, so the schedule grid itself is more informative at a
+ * glance — never the customer phone number or location, which stay behind
+ * the booking-details click-through. Falls back to the generic label only
+ * if the area is unexpectedly empty (older data from before area became a
+ * required field).
+ */
+export function cellLabel(resolution: CellResolution): string {
+  if (resolution.status !== "booked") return CELL_LABELS[resolution.status];
+  const areaName = resolution.booking?.areaName ?? resolution.virtualOccurrence?.recurring.areaName ?? "";
+  return areaName.trim() || BOOKED_FALLBACK_LABEL;
+}
 
 export function ScheduleTable({
   workers,
@@ -118,9 +133,10 @@ export function ScheduleTable({
                             type="button"
                             disabled={!clickable}
                             onClick={() => clickable && onCellClick(worker, date, shift, resolution)}
-                            className={`flex h-11 w-full min-w-16 items-center justify-center rounded-lg text-xs font-medium transition-colors ${CELL_STYLES[resolution.status]}`}
+                            title={cellLabel(resolution)}
+                            className={`flex h-11 w-full min-w-16 items-center justify-center truncate rounded-lg px-1.5 text-xs font-medium transition-colors ${CELL_STYLES[resolution.status]}`}
                           >
-                            {CELL_LABELS[resolution.status]}
+                            {cellLabel(resolution)}
                           </button>
                         </td>
                       );
