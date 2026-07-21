@@ -6,7 +6,6 @@ import { TextInput } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
 
 export function SetupFirstManagerForm() {
-  const [secret, setSecret] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
@@ -31,7 +30,7 @@ export function SetupFirstManagerForm() {
       const res = await fetch("/api/setup-first-manager", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret, password }),
+        body: JSON.stringify({ password }),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string; uid?: string };
       if (!res.ok) {
@@ -82,15 +81,6 @@ export function SetupFirstManagerForm() {
         </span>
       </div>
 
-      <TextInput
-        label="رمز الإعداد (Setup Secret)"
-        type="password"
-        required
-        dir="ltr"
-        value={secret}
-        onChange={(e) => setSecret(e.target.value)}
-        autoComplete="off"
-      />
       <TextInput
         label="كلمة المرور الجديدة"
         type="password"

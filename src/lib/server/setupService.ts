@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import type { Auth } from "firebase-admin/auth";
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { BAHRAIN_TZ } from "../date";
@@ -8,36 +7,25 @@ import { ServiceError } from "./errors";
  * One-time, web-based bootstrap for the very first manager account —
  * an alternative to running scripts/bootstrap-manager.ts from a terminal.
  * Everything here runs server-side under the Admin SDK; the browser never
- * sees Firebase Admin credentials, only the setup secret it must supply.
+ * sees Firebase Admin credentials.
  *
- * Safety model:
- *  - A dedicated settings/setupState document is the permanent lock. It is
- *    claimed inside a Firestore transaction that also checks for any
- *    already-existing active manager, so two concurrent submissions (or a
- *    resubmission after a manager was created some other way) can never
- *    both succeed, and once completed the lock is never released.
- *  - The setup secret (FIRST_MANAGER_SETUP_SECRET) is compared with a
- *    constant-time comparison to avoid leaking it via response-time
- *    differences, and the endpoint refuses to run at all if the configured
- *    secret looks too short to be "strong".
+ * Safety model: a dedicated settings/setupState document is the permanent
+ * lock. It is claimed inside a Firestore transaction that also checks for
+ * any already-existing active manager, so two concurrent submissions (or a
+ * resubmission after a manager was created some other way) can never both
+ * succeed, and once completed the lock is never released. There is no
+ * separate secret gate — "no manager exists yet" is the entire precondition,
+ * by design, so this requires no extra environment variable to configure.
  */
 
 export const FIRST_MANAGER_EMAIL = "aqeelhumood2@gmail.com";
 export const FIRST_MANAGER_NAME = "Aqeel";
-export const MIN_SETUP_SECRET_LENGTH = 20;
 export const MIN_SETUP_PASSWORD_LENGTH = 8;
 
 const SETUP_STATE_PATH = ["settings", "setupState"] as const;
 
 function setupStateRef(db: Firestore) {
   return db.collection(SETUP_STATE_PATH[0]).doc(SETUP_STATE_PATH[1]);
-}
-
-function secretsMatch(provided: string, expected: string): boolean {
-  const a = Buffer.from(provided, "utf8");
-  const b = Buffer.from(expected, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
 }
 
 /** Read-only check used to decide whether the setup page shows the form. */
@@ -58,13 +46,6 @@ class SetupAlreadyCompletedError extends ServiceError {
   constructor() {
     super("تم إعداد النظام مسبقًا، هذه الصفحة لم تعد متاحة.", "SETUP_ALREADY_COMPLETED", 403);
     this.name = "SetupAlreadyCompletedError";
-  }
-}
-
-class InvalidSetupSecretError extends ServiceError {
-  constructor() {
-    super("رمز الإعداد غير صحيح.", "INVALID_SECRET", 401);
-    this.name = "InvalidSetupSecretError";
   }
 }
 
@@ -138,31 +119,19 @@ async function finalizeSetupLock(db: Firestore, uid: string): Promise<void> {
 }
 
 export interface CompleteSetupInput {
-  secret: string;
   password: string;
 }
 
 /**
- * Runs the full first-manager bootstrap: verifies the one-time secret,
- * claims the permanent lock, creates/updates the Firebase Auth user, sets
- * the manager custom claim, writes users/{uid}, and seeds settings/app.
+ * Runs the full first-manager bootstrap: claims the permanent lock,
+ * creates/updates the Firebase Auth user, sets the manager custom claim,
+ * writes users/{uid}, and seeds settings/app.
  */
 export async function completeFirstManagerSetup(
   db: Firestore,
   auth: Auth,
   input: CompleteSetupInput
 ): Promise<{ uid: string }> {
-  const configuredSecret = process.env.FIRST_MANAGER_SETUP_SECRET;
-  if (!configuredSecret || configuredSecret.length < MIN_SETUP_SECRET_LENGTH) {
-    throw new ServiceError(
-      "إعداد النظام غير مُفعّل على الخادم (رمز الإعداد مفقود أو غير قوي بما يكفي).",
-      "SETUP_NOT_CONFIGURED",
-      500
-    );
-  }
-  if (!input.secret || !secretsMatch(input.secret, configuredSecret)) {
-    throw new InvalidSetupSecretError();
-  }
   if (!input.password || input.password.length < MIN_SETUP_PASSWORD_LENGTH) {
     throw new ServiceError(
       `كلمة المرور يجب ألا تقل عن ${MIN_SETUP_PASSWORD_LENGTH} أحرف`,

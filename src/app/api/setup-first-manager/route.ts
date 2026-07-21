@@ -4,7 +4,6 @@ import { ServiceError } from "@/lib/server/errors";
 import { completeFirstManagerSetup } from "@/lib/server/setupService";
 
 interface SetupBody {
-  secret?: string;
   password?: string;
 }
 
@@ -13,7 +12,6 @@ export async function POST(request: Request) {
 
   try {
     const { uid } = await completeFirstManagerSetup(getAdminDb(), getAdminAuth(), {
-      secret: body.secret ?? "",
       password: body.password ?? "",
     });
     return NextResponse.json({ ok: true, uid });

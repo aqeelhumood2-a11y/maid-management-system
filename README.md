@@ -62,9 +62,9 @@ See `.env.example` for the full list. Summary:
 | `FIREBASE_ADMIN_CLIENT_EMAIL` | Server | Admin SDK, from the service account |
 | `FIREBASE_ADMIN_PRIVATE_KEY` | Server | Admin SDK; keep the `\n` escapes literal |
 | `NEXT_PUBLIC_USE_FIREBASE_EMULATOR` | Browser | Set `true` only for local emulator dev |
-| `FIRST_MANAGER_SETUP_SECRET` | Server | Gates `/setup-first-manager`; see below. Optional after first use |
 
-No real secrets are committed to this repository.
+No real secrets are committed to this repository. `/setup-first-manager` (see
+below) needs no environment variable of its own.
 
 ## First manager bootstrap
 
@@ -73,26 +73,21 @@ accounts are created by a manager via Settings → Users (an Admin-SDK server
 route). To get that very first manager onto a fresh project, there are two
 equivalent options:
 
-### Option A — web setup page (no terminal access needed)
+### Option A — web setup page (no terminal access, no environment variable)
 
-1. In Vercel → Project → Settings → Environment Variables, add
-   `FIRST_MANAGER_SETUP_SECRET` — a long random value (`openssl rand -base64 32`
-   or similar), at least 20 characters. Redeploy (or it will apply to the next
-   deploy) so the running app picks it up.
-2. Visit `https://<your-app>/setup-first-manager`.
-3. Enter that same secret plus a new password (8+ characters, entered twice),
-   and submit.
-4. On success the page shows the created account's Firestore `uid` and a link
+1. Deploy the app (no extra configuration needed for this step).
+2. Visit `https://<your-app>/setup-first-manager` and set a password
+   (8+ characters, entered twice), then submit.
+3. On success the page shows the created account's Firestore `uid` and a link
    to `/login`. Sign in with `aqeelhumood2@gmail.com` and the password you
    just set.
 
-This is a genuine one-time flow, enforced server-side (`src/lib/server/setupService.ts`,
-called only from `POST /api/setup-first-manager`), not just hidden in the UI:
+This is a genuine one-time flow, enforced server-side
+(`src/lib/server/setupService.ts`, called only from `POST
+/api/setup-first-manager`), not just hidden in the UI. There is no setup
+secret to configure — "no active manager exists yet" is the entire
+precondition, by design:
 
-- It refuses to run at all if `FIRST_MANAGER_SETUP_SECRET` isn't set, or is
-  shorter than 20 characters.
-- The secret is compared with a constant-time comparison so response timing
-  can't leak it.
 - Before creating anything, it atomically claims a permanent lock document at
   `settings/setupState` inside a Firestore transaction that also re-checks for
   any already-existing active manager — so two simultaneous submissions (or a
@@ -102,16 +97,21 @@ called only from `POST /api/setup-first-manager`), not just hidden in the UI:
   authenticated manager) from writing to `settings/setupState` directly, so it
   can't be reset via the SDK either.
 - It always targets the fixed account `aqeelhumood2@gmail.com` / name `Aqeel`
-  — the only things you supply are the setup secret and the password — so the
-  page can't be used to create an account for an arbitrary email.
+  — the only thing you supply is the password — so the page can't be used to
+  create an account for an arbitrary email.
 - Firebase Admin credentials never reach the browser; the page is a plain form
-  that POSTs the secret + password to the server route, which is the only
-  place holding Admin SDK access.
+  that POSTs the password to the server route, which is the only place
+  holding Admin SDK access.
 
-It's safe to leave the page deployed after use (it will just keep showing
-"already set up" and the API route will keep rejecting requests), or remove
-the route/page and the `FIRST_MANAGER_SETUP_SECRET` variable afterward if you
-prefer not to keep it around.
+Because there's no secret, whoever loads the page first while no manager
+exists yet claims the account — which is fine for a single-owner deploy where
+you're the one visiting it right after the first deploy, but it does mean the
+page shouldn't be left reachable indefinitely before you've used it if you're
+not the only person who could guess the URL. It's safe to leave deployed
+after use either way, since it will permanently keep showing "already set up"
+and the API route will keep rejecting requests — or remove
+`src/app/setup-first-manager/` and `src/app/api/setup-first-manager/`
+afterward if you prefer not to keep it around.
 
 ### Option B — bootstrap script (requires local terminal + service account key)
 
@@ -182,9 +182,7 @@ npm start
    surface as `Error: No Output Directory named "public"` on some setups.
 2. Add the environment variables listed above (`NEXT_PUBLIC_FIREBASE_*` and
    `FIREBASE_ADMIN_*`) in Vercel → Project → Settings → Environment Variables,
-   for Production (and Preview if desired). Add `FIRST_MANAGER_SETUP_SECRET`
-   too if you plan to use `/setup-first-manager` (see First manager bootstrap
-   above) instead of running the bootstrap script locally.
+   for Production (and Preview if desired).
 3. Deploy. No build command changes are required — `next build` is used as-is.
 
 ## User roles
@@ -340,7 +338,7 @@ Settings (business name, area CRUD, user account creation/activation).
 
 ```
 npm run test           → 3 files, 22 tests passed  (date / availability / recurring pure logic)
-npm run test:emulator  → 3 files, 53 tests passed  (Firestore rules + server booking/recurring/
+npm run test:emulator  → 3 files, 51 tests passed  (Firestore rules + server booking/recurring/
                           setup services, run against the Firebase Emulator Suite via
                           `firebase emulators:exec`)
 npm run lint            → 0 problems
@@ -364,14 +362,13 @@ rejected outright regardless of role or payload.
 
 For the first-manager web setup flow specifically
 (`tests/emulator/setup.test.ts`, using a real Admin Auth instance against the
-Auth emulator): an incorrect secret is rejected and creates nothing; a
-too-short password is rejected; a too-short *configured* secret disables the
-endpoint entirely; a successful run creates the Auth user, sets the manager
-claim, writes `users/{uid}` and seeds `settings/app`; a second attempt with
-the correct secret is rejected once locked and leaves the original account
-untouched; an already-existing active manager (created some other way) locks
-the flow permanently without creating a duplicate account; and two concurrent
-attempts resolve to exactly one winner.
+Auth emulator): a too-short password is rejected and creates nothing; a
+successful run creates the Auth user, sets the manager claim, writes
+`users/{uid}` and seeds `settings/app`; a second attempt is rejected once
+locked and leaves the original account untouched; an already-existing active
+manager (created some other way) locks the flow permanently without creating
+a duplicate account; and two concurrent attempts resolve to exactly one
+winner.
 
 ## Known limitations
 

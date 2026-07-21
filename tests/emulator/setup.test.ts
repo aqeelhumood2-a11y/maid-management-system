@@ -17,13 +17,16 @@ import {
  * instance against the Auth emulator (not the rules-unit-testing fake
  * auth context, which never touches the Auth emulator's user store) so
  * createUser/getUserByEmail/setCustomUserClaims are exercised for real.
+ *
+ * There is no setup-secret gate — "no active manager exists yet" is the
+ * entire precondition, enforced by the permanent settings/setupState lock
+ * claimed inside a Firestore transaction.
  */
 
 let app: App;
 let db: Firestore;
 let auth: Auth;
 
-const STRONG_SECRET = "a-very-strong-one-time-secret-1234567890";
 const VALID_PASSWORD = "Str0ngPassw0rd!";
 
 beforeAll(() => {
@@ -31,11 +34,9 @@ beforeAll(() => {
   app = existing ?? initializeApp({ projectId: "demo-maid-mgmt-setup" }, "setup-test-app");
   db = getFirestore(app);
   auth = getAuth(app);
-  process.env.FIRST_MANAGER_SETUP_SECRET = STRONG_SECRET;
 });
 
 afterAll(async () => {
-  delete process.env.FIRST_MANAGER_SETUP_SECRET;
   await deleteApp(app);
 });
 
@@ -90,41 +91,19 @@ describe("isFirstManagerSetupLocked", () => {
 });
 
 describe("completeFirstManagerSetup — validation", () => {
-  it("rejects an incorrect setup secret and creates nothing", async () => {
-    await expect(
-      completeFirstManagerSetup(db, auth, { secret: "wrong-secret", password: VALID_PASSWORD })
-    ).rejects.toMatchObject({ code: "INVALID_SECRET" });
-
-    expect(await isFirstManagerSetupLocked(db)).toBe(false);
-    await expect(auth.getUserByEmail(FIRST_MANAGER_EMAIL)).rejects.toBeTruthy();
-  });
-
   it("rejects a password shorter than the minimum and creates nothing", async () => {
     await expect(
-      completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: "short" })
+      completeFirstManagerSetup(db, auth, { password: "short" })
     ).rejects.toMatchObject({ code: "VALIDATION" });
 
     expect(await isFirstManagerSetupLocked(db)).toBe(false);
-  });
-
-  it("refuses to run if the configured secret itself is too short (misconfiguration)", async () => {
-    process.env.FIRST_MANAGER_SETUP_SECRET = "too-short";
-    try {
-      await expect(
-        completeFirstManagerSetup(db, auth, { secret: "too-short", password: VALID_PASSWORD })
-      ).rejects.toMatchObject({ code: "SETUP_NOT_CONFIGURED" });
-    } finally {
-      process.env.FIRST_MANAGER_SETUP_SECRET = STRONG_SECRET;
-    }
+    await expect(auth.getUserByEmail(FIRST_MANAGER_EMAIL)).rejects.toBeTruthy();
   });
 });
 
 describe("completeFirstManagerSetup — success path", () => {
   it("creates the Auth user, sets the manager claim, writes users/{uid}, and seeds settings/app", async () => {
-    const { uid } = await completeFirstManagerSetup(db, auth, {
-      secret: STRONG_SECRET,
-      password: VALID_PASSWORD,
-    });
+    const { uid } = await completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD });
 
     const authUser = await auth.getUser(uid);
     expect(authUser.email).toBe(FIRST_MANAGER_EMAIL);
@@ -158,7 +137,7 @@ describe("completeFirstManagerSetup — success path", () => {
       updatedBy: "seed",
     });
 
-    await completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: VALID_PASSWORD });
+    await completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD });
 
     const settingsDoc = await db.collection("settings").doc("app").get();
     expect(settingsDoc.data()?.businessName).toBe("اسم مخصص بالفعل");
@@ -166,14 +145,11 @@ describe("completeFirstManagerSetup — success path", () => {
 });
 
 describe("completeFirstManagerSetup — permanent lock", () => {
-  it("rejects a second attempt with the correct secret after the first succeeds", async () => {
-    const first = await completeFirstManagerSetup(db, auth, {
-      secret: STRONG_SECRET,
-      password: VALID_PASSWORD,
-    });
+  it("rejects a second attempt after the first succeeds", async () => {
+    const first = await completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD });
 
     await expect(
-      completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: "AnotherStr0ngPass!" })
+      completeFirstManagerSetup(db, auth, { password: "AnotherStr0ngPass!" })
     ).rejects.toMatchObject({ code: "SETUP_ALREADY_COMPLETED" });
 
     // The original account is untouched by the rejected second attempt.
@@ -187,7 +163,7 @@ describe("completeFirstManagerSetup — permanent lock", () => {
     await seedActiveManager("manager-created-elsewhere");
 
     await expect(
-      completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: VALID_PASSWORD })
+      completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD })
     ).rejects.toMatchObject({ code: "SETUP_ALREADY_COMPLETED" });
 
     expect(await isFirstManagerSetupLocked(db)).toBe(true);
@@ -197,8 +173,8 @@ describe("completeFirstManagerSetup — permanent lock", () => {
 
   it("resolves two concurrent setup attempts with exactly one winner", async () => {
     const results = await Promise.allSettled([
-      completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: VALID_PASSWORD }),
-      completeFirstManagerSetup(db, auth, { secret: STRONG_SECRET, password: "AnotherStr0ngPass!" }),
+      completeFirstManagerSetup(db, auth, { password: VALID_PASSWORD }),
+      completeFirstManagerSetup(db, auth, { password: "AnotherStr0ngPass!" }),
     ]);
 
     const fulfilled = results.filter((r) => r.status === "fulfilled");
