@@ -1,0 +1,205 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Every permission check re-reads the caller's own user doc, so a
+    // deactivation or role change takes effect on the very next request
+    // instead of waiting for the client's ID token to refresh.
+    function isActiveUser() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        me().active == true;
+    }
+
+    function isManager() {
+      return isActiveUser() && me().role == 'manager';
+    }
+
+    function isServerTimestamp(value) {
+      return value == request.time;
+    }
+
+    // ---------------------------------------------------------------
+    // users
+    // Account creation, role assignment and activation are exclusively
+    // performed by the Admin SDK (server API routes), which bypasses
+    // rules entirely. Clients can never write here, so a signed-in user
+    // can never promote themselves or reactivate their own account.
+    // ---------------------------------------------------------------
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isManager());
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // areas
+    // ---------------------------------------------------------------
+    match /areas/{areaId} {
+      allow read: if isActiveUser();
+      allow create: if isManager() &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        request.resource.data.active == true &&
+        request.resource.data.createdBy == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt) &&
+        isServerTimestamp(request.resource.data.updatedAt);
+      allow update: if isManager() &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        request.resource.data.active is bool &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.createdBy == resource.data.createdBy &&
+        isServerTimestamp(request.resource.data.updatedAt) &&
+        request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // workers
+    // ---------------------------------------------------------------
+    match /workers/{workerId} {
+      allow read: if isActiveUser();
+      allow create: if isManager() &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        request.resource.data.active == true &&
+        request.resource.data.createdBy == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt) &&
+        isServerTimestamp(request.resource.data.updatedAt);
+      allow update: if isManager() &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() > 0 &&
+        request.resource.data.active is bool &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.createdBy == resource.data.createdBy &&
+        isServerTimestamp(request.resource.data.updatedAt) &&
+        request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // slots — the double-booking lock. A slot document id is always
+    // `${workerId}_${date}_${shift}`. It may only ever be created while
+    // absent and deleted on cancellation; it can never be overwritten,
+    // which is what guarantees a slot cannot silently change owner.
+    // ---------------------------------------------------------------
+    match /slots/{slotId} {
+      allow read: if isActiveUser();
+      allow create: if isActiveUser() &&
+        slotId == (request.resource.data.workerId + '_' + request.resource.data.date + '_' + request.resource.data.shift) &&
+        isServerTimestamp(request.resource.data.createdAt);
+      allow update: if false;
+      allow delete: if isActiveUser();
+    }
+
+    // ---------------------------------------------------------------
+    // bookings
+    // ---------------------------------------------------------------
+    match /bookings/{bookingId} {
+      allow read: if isActiveUser();
+
+      allow create: if isActiveUser() &&
+        request.resource.data.shift in ['morning', 'afternoon'] &&
+        request.resource.data.status == 'active' &&
+        request.resource.data.hours is number && request.resource.data.hours > 0 &&
+        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
+        (request.resource.data.paymentMethod == null || request.resource.data.paymentMethod in ['benefit', 'cash']) &&
+        request.resource.data.paid == (request.resource.data.paymentMethod != null) &&
+        request.resource.data.source in ['today', 'weekly', 'manager_future', 'recurring'] &&
+        request.resource.data.date is string &&
+        request.resource.data.workerId is string &&
+        request.resource.data.areaId is string &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.updatedBy == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt) &&
+        isServerTimestamp(request.resource.data.updatedAt);
+
+      allow update: if isActiveUser() &&
+        request.resource.data.workerId == resource.data.workerId &&
+        request.resource.data.date == resource.data.date &&
+        request.resource.data.shift == resource.data.shift &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.createdBy == resource.data.createdBy &&
+        request.resource.data.status in ['active', 'cancelled'] &&
+        request.resource.data.hours is number && request.resource.data.hours > 0 &&
+        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
+        (request.resource.data.paymentMethod == null || request.resource.data.paymentMethod in ['benefit', 'cash']) &&
+        isServerTimestamp(request.resource.data.updatedAt) &&
+        request.resource.data.updatedBy == request.auth.uid;
+
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // recurringSchedules & recurringExceptions — manager-only feature.
+    // ---------------------------------------------------------------
+    match /recurringSchedules/{id} {
+      allow read: if isActiveUser();
+      allow create: if isManager() &&
+        request.resource.data.dayOfWeek is number &&
+        request.resource.data.dayOfWeek != 5 &&
+        request.resource.data.shift in ['morning', 'afternoon'] &&
+        request.resource.data.status == 'active' &&
+        request.resource.data.hours is number && request.resource.data.hours > 0 &&
+        request.resource.data.amount is number && request.resource.data.amount >= 0 &&
+        request.resource.data.createdBy == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt) &&
+        isServerTimestamp(request.resource.data.updatedAt);
+      allow update: if isManager() &&
+        request.resource.data.workerId == resource.data.workerId &&
+        request.resource.data.dayOfWeek == resource.data.dayOfWeek &&
+        request.resource.data.shift == resource.data.shift &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.createdBy == resource.data.createdBy &&
+        request.resource.data.status in ['active', 'ended', 'cancelled'] &&
+        isServerTimestamp(request.resource.data.updatedAt) &&
+        request.resource.data.updatedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /recurringExceptions/{id} {
+      allow read: if isActiveUser();
+      allow create: if isManager() &&
+        id == (request.resource.data.recurringId + '_' + request.resource.data.date) &&
+        request.resource.data.type == 'cancelled' &&
+        request.resource.data.createdBy == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // activityLogs — append-only audit trail, manager-readable only.
+    // ---------------------------------------------------------------
+    match /activityLogs/{id} {
+      allow read: if isManager();
+      allow create: if isActiveUser() &&
+        request.resource.data.actingUid == request.auth.uid &&
+        isServerTimestamp(request.resource.data.createdAt);
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // settings
+    // ---------------------------------------------------------------
+    match /settings/{id} {
+      allow read: if isActiveUser();
+      allow write: if isManager() &&
+        request.resource.data.timezone == 'Asia/Bahrain' &&
+        request.resource.data.businessName is string &&
+        request.resource.data.businessName.size() > 0 &&
+        isServerTimestamp(request.resource.data.updatedAt) &&
+        request.resource.data.updatedBy == request.auth.uid;
+    }
+  }
+}
