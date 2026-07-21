@@ -1,6 +1,7 @@
 import { FieldValue, type Firestore, type Transaction } from "firebase-admin/firestore";
 import { isFriday } from "../date";
 import { slotId } from "../availability";
+import { ServiceError } from "./errors";
 import type {
   ActivityActionType,
   Booking,
@@ -25,16 +26,7 @@ export const BOOKING_CONFLICT_MESSAGE_AR = "تم حجز العاملة للتو�
 export const FRIDAY_RESTRICTED_MESSAGE_AR =
   "الحجز الاستثنائي في يوم الجمعة متاح للمدير فقط.";
 
-export class ServiceError extends Error {
-  code: string;
-  status: number;
-  constructor(message: string, code: string, status = 400) {
-    super(message);
-    this.name = "ServiceError";
-    this.code = code;
-    this.status = status;
-  }
-}
+export { ServiceError };
 
 export class BookingConflictError extends ServiceError {
   constructor() {

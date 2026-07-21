@@ -62,14 +62,58 @@ See `.env.example` for the full list. Summary:
 | `FIREBASE_ADMIN_CLIENT_EMAIL` | Server | Admin SDK, from the service account |
 | `FIREBASE_ADMIN_PRIVATE_KEY` | Server | Admin SDK; keep the `\n` escapes literal |
 | `NEXT_PUBLIC_USE_FIREBASE_EMULATOR` | Browser | Set `true` only for local emulator dev |
+| `FIRST_MANAGER_SETUP_SECRET` | Server | Gates `/setup-first-manager`; see below. Optional after first use |
 
 No real secrets are committed to this repository.
 
 ## First manager bootstrap
 
-There is no public registration page — accounts are created by a manager (via
-Settings → Users, which uses the Admin SDK server route) or, for the very first
-manager on a fresh project, via the bootstrap script:
+There is no public registration page. Once a first manager exists, all further
+accounts are created by a manager via Settings → Users (an Admin-SDK server
+route). To get that very first manager onto a fresh project, there are two
+equivalent options:
+
+### Option A — web setup page (no terminal access needed)
+
+1. In Vercel → Project → Settings → Environment Variables, add
+   `FIRST_MANAGER_SETUP_SECRET` — a long random value (`openssl rand -base64 32`
+   or similar), at least 20 characters. Redeploy (or it will apply to the next
+   deploy) so the running app picks it up.
+2. Visit `https://<your-app>/setup-first-manager`.
+3. Enter that same secret plus a new password (8+ characters, entered twice),
+   and submit.
+4. On success the page shows the created account's Firestore `uid` and a link
+   to `/login`. Sign in with `aqeelhumood2@gmail.com` and the password you
+   just set.
+
+This is a genuine one-time flow, enforced server-side (`src/lib/server/setupService.ts`,
+called only from `POST /api/setup-first-manager`), not just hidden in the UI:
+
+- It refuses to run at all if `FIRST_MANAGER_SETUP_SECRET` isn't set, or is
+  shorter than 20 characters.
+- The secret is compared with a constant-time comparison so response timing
+  can't leak it.
+- Before creating anything, it atomically claims a permanent lock document at
+  `settings/setupState` inside a Firestore transaction that also re-checks for
+  any already-existing active manager — so two simultaneous submissions (or a
+  resubmission after a manager was created some other way, e.g. restoring from
+  a backup) can never both succeed, and the page itself shows "already set up"
+  once the lock is set. Firestore rules additionally block any client (even an
+  authenticated manager) from writing to `settings/setupState` directly, so it
+  can't be reset via the SDK either.
+- It always targets the fixed account `aqeelhumood2@gmail.com` / name `Aqeel`
+  — the only things you supply are the setup secret and the password — so the
+  page can't be used to create an account for an arbitrary email.
+- Firebase Admin credentials never reach the browser; the page is a plain form
+  that POSTs the secret + password to the server route, which is the only
+  place holding Admin SDK access.
+
+It's safe to leave the page deployed after use (it will just keep showing
+"already set up" and the API route will keep rejecting requests), or remove
+the route/page and the `FIRST_MANAGER_SETUP_SECRET` variable afterward if you
+prefer not to keep it around.
+
+### Option B — bootstrap script (requires local terminal + service account key)
 
 ```bash
 # Against production Firebase (uses FIREBASE_ADMIN_* env vars):
@@ -84,7 +128,8 @@ npm run bootstrap:manager -- --email manager@example.com --password 'Str0ngPass1
 The script creates the Firebase Auth user (or updates it if it already exists),
 sets the `role: manager` custom claim, writes the `users/{uid}` Firestore profile,
 and seeds the `settings/app` document if missing. It is idempotent and safe to
-re-run.
+re-run — unlike the web setup page, it has no permanent one-time lock, since
+it already requires possessing the service account key.
 
 ## Firestore rules & indexes deployment
 
@@ -137,7 +182,9 @@ npm start
    surface as `Error: No Output Directory named "public"` on some setups.
 2. Add the environment variables listed above (`NEXT_PUBLIC_FIREBASE_*` and
    `FIREBASE_ADMIN_*`) in Vercel → Project → Settings → Environment Variables,
-   for Production (and Preview if desired).
+   for Production (and Preview if desired). Add `FIRST_MANAGER_SETUP_SECRET`
+   too if you plan to use `/setup-first-manager` (see First manager bootstrap
+   above) instead of running the bootstrap script locally.
 3. Deploy. No build command changes are required — `next build` is used as-is.
 
 ## User roles
@@ -184,6 +231,10 @@ npm start
 - `activityLogs/{id}` — append-only audit trail (type, entity, acting user,
   before/after snapshot, timestamp); manager-readable only, never editable
 - `settings/app` — `businessName, timezone` (fixed to `Asia/Bahrain`)
+- `settings/setupState` — permanent lock for the one-time `/setup-first-manager`
+  flow (`firstManagerCreated, status, claimedAt, completedAt, managerUid`);
+  written only by the Admin SDK, never by any client (see First manager
+  bootstrap above)
 
 ## Concurrency and double-booking strategy
 
@@ -289,12 +340,12 @@ Settings (business name, area CRUD, user account creation/activation).
 
 ```
 npm run test           → 3 files, 22 tests passed  (date / availability / recurring pure logic)
-npm run test:emulator  → 2 files, 43 tests passed  (Firestore rules + server booking/recurring
-                          service, run against the Firebase Emulator Suite via
+npm run test:emulator  → 3 files, 53 tests passed  (Firestore rules + server booking/recurring/
+                          setup services, run against the Firebase Emulator Suite via
                           `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
-npm run build           → succeeds (Turbopack production build, 25 routes)
+npm run build           → succeeds (Turbopack production build, 26 routes)
 ```
 
 Covered scenarios include: route/role protection expectations at the rules
@@ -310,6 +361,17 @@ still being able to edit a Friday booking's non-date fields once a manager
 placed it there), a manager's Friday override succeeding, and direct client
 writes to `bookings`/`slots`/`recurringSchedules`/`recurringExceptions` being
 rejected outright regardless of role or payload.
+
+For the first-manager web setup flow specifically
+(`tests/emulator/setup.test.ts`, using a real Admin Auth instance against the
+Auth emulator): an incorrect secret is rejected and creates nothing; a
+too-short password is rejected; a too-short *configured* secret disables the
+endpoint entirely; a successful run creates the Auth user, sets the manager
+claim, writes `users/{uid}` and seeds `settings/app`; a second attempt with
+the correct secret is rejected once locked and leaves the original account
+untouched; an already-existing active manager (created some other way) locks
+the flow permanently without creating a duplicate account; and two concurrent
+attempts resolve to exactly one winner.
 
 ## Known limitations
 

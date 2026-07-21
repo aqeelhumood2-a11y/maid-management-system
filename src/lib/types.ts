@@ -143,7 +143,8 @@ export type ActivityActionType =
   | "area_deactivated"
   | "user_added"
   | "user_edited"
-  | "settings_updated";
+  | "settings_updated"
+  | "first_manager_setup";
 
 export interface ActivityLog {
   id: string;
@@ -163,6 +164,15 @@ export interface AppSettings {
   timezone: string;
   updatedAt: Timestamp | null;
   updatedBy: string | null;
+}
+
+/** settings/setupState — the permanent lock for the one-time first-manager setup flow. */
+export interface FirstManagerSetupState {
+  firstManagerCreated: boolean;
+  status: "pending" | "completed" | "locked-existing-manager";
+  claimedAt: Timestamp | null;
+  completedAt: Timestamp | null;
+  managerUid: string | null;
 }
 
 export type CellStatus = "available" | "booked" | "friday_holiday" | "inactive";

@@ -28,6 +28,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   user_added: "إضافة مستخدم",
   user_edited: "تعديل مستخدم",
   settings_updated: "تحديث الإعدادات",
+  first_manager_setup: "إعداد أول حساب مدير",
 };
 
 export default function ActivityPage() {

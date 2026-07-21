@@ -144,10 +144,14 @@ service cloud.firestore {
 
     // ---------------------------------------------------------------
     // settings
+    // `setupState` is the permanent lock for the one-time first-manager
+    // bootstrap flow (src/lib/server/setupService.ts) and is written
+    // exclusively by the Admin SDK — never by any client, not even a
+    // manager, so it can never be tampered with or reset via the SDK.
     // ---------------------------------------------------------------
     match /settings/{id} {
-      allow read: if isActiveUser();
-      allow write: if isManager() &&
+      allow read: if isActiveUser() && id != 'setupState';
+      allow write: if isManager() && id != 'setupState' &&
         request.resource.data.timezone == 'Asia/Bahrain' &&
         request.resource.data.businessName is string &&
         request.resource.data.businessName.size() > 0 &&
