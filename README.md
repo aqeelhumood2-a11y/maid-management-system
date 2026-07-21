@@ -69,47 +69,58 @@ No real secrets are committed to this repository.
 
 There is no public registration page, no setup page, and nothing to visit or
 configure by hand. The very first manager account is created automatically,
-server-side, the moment the app starts — see `src/instrumentation.ts`, which
-Next.js runs once whenever a new server instance boots
-([docs](https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation)).
-On startup it calls `completeFirstManagerSetup()`
-(`src/lib/server/setupService.ts`) with fixed values for this project:
+server-side, with fixed values for this project:
 
 - Email: `aqeelhumood2@gmail.com`
 - Name: `Aqeel`
-- A one-time bootstrap password hardcoded in `src/instrumentation.ts`
+- A one-time bootstrap password, in `src/lib/server/bootstrapCredentials.ts`
 
-If no active manager exists yet, it creates/updates that Firebase Auth user,
+If no active manager exists yet, `completeFirstManagerSetup()`
+(`src/lib/server/setupService.ts`) creates/updates that Firebase Auth user,
 sets the `role: manager` custom claim, writes `users/{uid}` (`role: manager,
 active: true, name: Aqeel`), seeds `settings/app` with `timezone:
 "Asia/Bahrain"` if missing, and permanently marks
 `settings/setupState.firstManagerCreated = true`. **If an active manager
 already exists, it does nothing** — this is checked first, every time.
 
-This is safe to run on every server startup (every cold start, redeploy,
-etc.), not just the first one:
+**The guaranteed trigger is `src/proxy.ts`**, not `instrumentation.ts`. An
+earlier version of this relied solely on Next.js's `instrumentation.ts`
+`register()` hook, which only fires when an actual Node.js server instance
+starts — but `/login` is a statically prerendered page whose sign-in form
+calls Firebase Auth directly from the browser, so on a platform that serves
+static routes from an edge cache, a visitor's entire session can complete
+(load `/login`, attempt to sign in, fail) without any Node.js server
+instance ever starting, and the hook never fires. Proxy runs on every
+matched request regardless of caching, so the bootstrap check now happens
+there — confirmed by hitting a freshly built `/login` page directly with
+nothing else running and seeing the account get created. `instrumentation.ts`
+still calls the same function as a harmless second attempt on
+platforms/requests where it does fire (e.g. self-hosted `next start`), since
+the permanent Firestore lock makes running it from two places safe.
+
+This is safe to run on every request that reaches Proxy, not just the first:
 
 - The check-and-create is atomic: `completeFirstManagerSetup()` claims the
   `settings/setupState` lock inside a Firestore transaction that also
-  re-checks for any already-existing active manager, so two server instances
-  starting at the same moment can never both create an account, and once
-  completed the lock is never released. Firestore rules additionally block
-  any client (even an authenticated manager) from writing to
-  `settings/setupState` directly.
-- After the first successful run, every later startup is a single cheap
-  Firestore read that finds the lock already set and returns immediately —
-  it does not touch Auth or re-create anything.
+  re-checks for any already-existing active manager, so concurrent requests
+  can never both create an account, and once completed the lock is never
+  released. Firestore rules additionally block any client (even an
+  authenticated manager) from writing to `settings/setupState` directly.
+- `src/proxy.ts` only actually attempts this once per warm server instance
+  (an in-memory flag short-circuits every request after the first), and a
+  hard 8-second timeout keeps a Firebase connectivity problem from ever
+  hanging a real request.
 - Firebase Admin credentials and the bootstrap password never reach the
-  browser; this all runs in `src/instrumentation.ts`'s `register()` function,
-  which only executes in the server's Node.js runtime.
+  browser; this all runs server-side, and the password lives only in
+  `src/lib/server/bootstrapCredentials.ts`.
 - A failure here (e.g. missing `FIREBASE_ADMIN_*` credentials) is caught and
-  logged to the server console — it can never block the app from starting or
-  serving requests.
+  logged to the server console — it can never block a request from being
+  served.
 
 **Sign in immediately after your first deploy** with `aqeelhumood2@gmail.com`
-and the bootstrap password from `src/instrumentation.ts`, then **change the
-password right away** from within the app — it's a real credential sitting in
-this repository's source and git history, not a secret.
+and the bootstrap password from `src/lib/server/bootstrapCredentials.ts`,
+then **change the password right away** from within the app — it's a real
+credential sitting in this repository's source and git history, not a secret.
 
 For any environment where you'd rather not hardcode a password in source at
 all (e.g. a separate non-production project), `scripts/bootstrap-manager.ts`

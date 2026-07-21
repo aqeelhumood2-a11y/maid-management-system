@@ -1,21 +1,19 @@
 /**
- * Runs once, automatically, whenever a new Next.js server instance starts
+ * Best-effort bootstrap trigger: runs whenever a new Next.js server instance
+ * starts, on platforms that actually spin one up for this to fire on
  * (see https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation).
- * Used here to bootstrap the very first manager account with no manual step
- * required after deploying — no setup page, no Vercel environment variable,
- * nothing to visit or click.
  *
- * completeFirstManagerSetup() claims a permanent Firestore lock
- * (settings/setupState.firstManagerCreated) inside a transaction before
- * writing anything, so this is safe to run on every cold start: once the
- * account exists it's a single cheap read that short-circuits, and two
- * server instances starting at once can't create duplicate accounts.
- *
- * The bootstrap password below is a ONE-TIME credential for
- * aqeelhumood2@gmail.com. Change it immediately after the first login.
+ * This is NOT the guaranteed trigger — on Vercel, a request that only ever
+ * touches statically-served content (like the /login page and its
+ * client-side-only Firebase Auth call) can complete without any Node.js
+ * server instance ever starting, so this hook may never fire at all in that
+ * case. src/proxy.ts is the actual guaranteed mechanism, since Proxy runs
+ * on every matched request regardless of caching. This file is kept as a
+ * cheap, harmless second attempt for platforms/requests where it does fire
+ * (e.g. `next start` outside Vercel, or any request that does need a fresh
+ * server instance) — completeFirstManagerSetup()'s permanent Firestore lock
+ * makes running it from two places safe.
  */
-
-const FIRST_MANAGER_BOOTSTRAP_PASSWORD = "Rkf@3UIn82zZSRHl";
 
 export async function register() {
   // The Admin SDK only runs in the Node.js runtime.
@@ -23,6 +21,7 @@ export async function register() {
 
   const { getAdminAuth, getAdminDb } = await import("@/lib/firebase/admin");
   const { completeFirstManagerSetup } = await import("@/lib/server/setupService");
+  const { FIRST_MANAGER_BOOTSTRAP_PASSWORD } = await import("@/lib/server/bootstrapCredentials");
 
   try {
     const { uid } = await completeFirstManagerSetup(getAdminDb(), getAdminAuth(), {
