@@ -126,11 +126,19 @@ npm start
 
 ## Vercel deployment
 
-1. Import this repository into Vercel (Next.js is auto-detected).
+1. Import this repository into Vercel. `vercel.json` at the repo root pins
+   `"framework": "nextjs"`, so Vercel builds it with the Next.js builder
+   (`.next` / Vercel's serverless/edge output) instead of expecting a static
+   `public` output directory — if the project's dashboard **Framework
+   Preset** was ever set to something other than "Next.js" (or the Output
+   Directory field was manually overridden), correct it to "Next.js" and
+   clear any custom Output Directory override; `vercel.json` overrides these
+   dashboard build settings, but a stale custom Output Directory can still
+   surface as `Error: No Output Directory named "public"` on some setups.
 2. Add the environment variables listed above (`NEXT_PUBLIC_FIREBASE_*` and
    `FIREBASE_ADMIN_*`) in Vercel → Project → Settings → Environment Variables,
    for Production (and Preview if desired).
-3. Deploy. No build command changes are required.
+3. Deploy. No build command changes are required — `next build` is used as-is.
 
 ## User roles
 
