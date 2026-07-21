@@ -4,15 +4,16 @@ import { BAHRAIN_TZ } from "../date";
 import { ServiceError } from "./errors";
 
 /**
- * One-time, web-based bootstrap for the very first manager account —
+ * One-time bootstrap for the very first manager account, invoked
+ * automatically from src/instrumentation.ts when a server instance starts —
  * an alternative to running scripts/bootstrap-manager.ts from a terminal.
  * Everything here runs server-side under the Admin SDK; the browser never
- * sees Firebase Admin credentials.
+ * sees Firebase Admin credentials or the bootstrap password.
  *
  * Safety model: a dedicated settings/setupState document is the permanent
  * lock. It is claimed inside a Firestore transaction that also checks for
- * any already-existing active manager, so two concurrent submissions (or a
- * resubmission after a manager was created some other way) can never both
+ * any already-existing active manager, so two concurrent server startups
+ * (or a run after a manager was created some other way) can never both
  * succeed, and once completed the lock is never released. There is no
  * separate secret gate — "no manager exists yet" is the entire precondition,
  * by design, so this requires no extra environment variable to configure.
@@ -28,7 +29,7 @@ function setupStateRef(db: Firestore) {
   return db.collection(SETUP_STATE_PATH[0]).doc(SETUP_STATE_PATH[1]);
 }
 
-/** Read-only check used to decide whether the setup page shows the form. */
+/** Read-only check for whether the one-time bootstrap has already run. */
 export async function isFirstManagerSetupLocked(db: Firestore): Promise<boolean> {
   const snap = await setupStateRef(db).get();
   if (snap.exists && snap.data()?.firstManagerCreated === true) return true;

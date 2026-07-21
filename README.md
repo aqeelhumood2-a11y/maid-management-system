@@ -63,57 +63,57 @@ See `.env.example` for the full list. Summary:
 | `FIREBASE_ADMIN_PRIVATE_KEY` | Server | Admin SDK; keep the `\n` escapes literal |
 | `NEXT_PUBLIC_USE_FIREBASE_EMULATOR` | Browser | Set `true` only for local emulator dev |
 
-No real secrets are committed to this repository. `/setup-first-manager` (see
-below) needs no environment variable of its own.
+No real secrets are committed to this repository.
 
 ## First manager bootstrap
 
-There is no public registration page. Once a first manager exists, all further
-accounts are created by a manager via Settings → Users (an Admin-SDK server
-route). To get that very first manager onto a fresh project, there are two
-equivalent options:
+There is no public registration page, no setup page, and nothing to visit or
+configure by hand. The very first manager account is created automatically,
+server-side, the moment the app starts — see `src/instrumentation.ts`, which
+Next.js runs once whenever a new server instance boots
+([docs](https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation)).
+On startup it calls `completeFirstManagerSetup()`
+(`src/lib/server/setupService.ts`) with fixed values for this project:
 
-### Option A — web setup page (no terminal access, no environment variable)
+- Email: `aqeelhumood2@gmail.com`
+- Name: `Aqeel`
+- A one-time bootstrap password hardcoded in `src/instrumentation.ts`
 
-1. Deploy the app (no extra configuration needed for this step).
-2. Visit `https://<your-app>/setup-first-manager` and set a password
-   (8+ characters, entered twice), then submit.
-3. On success the page shows the created account's Firestore `uid` and a link
-   to `/login`. Sign in with `aqeelhumood2@gmail.com` and the password you
-   just set.
+If no active manager exists yet, it creates/updates that Firebase Auth user,
+sets the `role: manager` custom claim, writes `users/{uid}` (`role: manager,
+active: true, name: Aqeel`), seeds `settings/app` with `timezone:
+"Asia/Bahrain"` if missing, and permanently marks
+`settings/setupState.firstManagerCreated = true`. **If an active manager
+already exists, it does nothing** — this is checked first, every time.
 
-This is a genuine one-time flow, enforced server-side
-(`src/lib/server/setupService.ts`, called only from `POST
-/api/setup-first-manager`), not just hidden in the UI. There is no setup
-secret to configure — "no active manager exists yet" is the entire
-precondition, by design:
+This is safe to run on every server startup (every cold start, redeploy,
+etc.), not just the first one:
 
-- Before creating anything, it atomically claims a permanent lock document at
-  `settings/setupState` inside a Firestore transaction that also re-checks for
-  any already-existing active manager — so two simultaneous submissions (or a
-  resubmission after a manager was created some other way, e.g. restoring from
-  a backup) can never both succeed, and the page itself shows "already set up"
-  once the lock is set. Firestore rules additionally block any client (even an
-  authenticated manager) from writing to `settings/setupState` directly, so it
-  can't be reset via the SDK either.
-- It always targets the fixed account `aqeelhumood2@gmail.com` / name `Aqeel`
-  — the only thing you supply is the password — so the page can't be used to
-  create an account for an arbitrary email.
-- Firebase Admin credentials never reach the browser; the page is a plain form
-  that POSTs the password to the server route, which is the only place
-  holding Admin SDK access.
+- The check-and-create is atomic: `completeFirstManagerSetup()` claims the
+  `settings/setupState` lock inside a Firestore transaction that also
+  re-checks for any already-existing active manager, so two server instances
+  starting at the same moment can never both create an account, and once
+  completed the lock is never released. Firestore rules additionally block
+  any client (even an authenticated manager) from writing to
+  `settings/setupState` directly.
+- After the first successful run, every later startup is a single cheap
+  Firestore read that finds the lock already set and returns immediately —
+  it does not touch Auth or re-create anything.
+- Firebase Admin credentials and the bootstrap password never reach the
+  browser; this all runs in `src/instrumentation.ts`'s `register()` function,
+  which only executes in the server's Node.js runtime.
+- A failure here (e.g. missing `FIREBASE_ADMIN_*` credentials) is caught and
+  logged to the server console — it can never block the app from starting or
+  serving requests.
 
-Because there's no secret, whoever loads the page first while no manager
-exists yet claims the account — which is fine for a single-owner deploy where
-you're the one visiting it right after the first deploy, but it does mean the
-page shouldn't be left reachable indefinitely before you've used it if you're
-not the only person who could guess the URL. It's safe to leave deployed
-after use either way, since it will permanently keep showing "already set up"
-and the API route will keep rejecting requests — or remove
-`src/app/setup-first-manager/` and `src/app/api/setup-first-manager/`
-afterward if you prefer not to keep it around.
+**Sign in immediately after your first deploy** with `aqeelhumood2@gmail.com`
+and the bootstrap password from `src/instrumentation.ts`, then **change the
+password right away** from within the app — it's a real credential sitting in
+this repository's source and git history, not a secret.
 
-### Option B — bootstrap script (requires local terminal + service account key)
+For any environment where you'd rather not hardcode a password in source at
+all (e.g. a separate non-production project), `scripts/bootstrap-manager.ts`
+remains available as a manual, parameterized alternative:
 
 ```bash
 # Against production Firebase (uses FIREBASE_ADMIN_* env vars):
@@ -125,11 +125,9 @@ export FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099
 npm run bootstrap:manager -- --email manager@example.com --password 'Str0ngPass1' --name "اسم المدير"
 ```
 
-The script creates the Firebase Auth user (or updates it if it already exists),
-sets the `role: manager` custom claim, writes the `users/{uid}` Firestore profile,
-and seeds the `settings/app` document if missing. It is idempotent and safe to
-re-run — unlike the web setup page, it has no permanent one-time lock, since
-it already requires possessing the service account key.
+It performs the same create-or-update/claim/`users/{uid}`/`settings/app`
+steps directly, and is idempotent, but does not touch or check
+`settings/setupState` — it's independent of the automatic startup bootstrap.
 
 ## Firestore rules & indexes deployment
 
@@ -229,10 +227,10 @@ npm start
 - `activityLogs/{id}` — append-only audit trail (type, entity, acting user,
   before/after snapshot, timestamp); manager-readable only, never editable
 - `settings/app` — `businessName, timezone` (fixed to `Asia/Bahrain`)
-- `settings/setupState` — permanent lock for the one-time `/setup-first-manager`
-  flow (`firstManagerCreated, status, claimedAt, completedAt, managerUid`);
-  written only by the Admin SDK, never by any client (see First manager
-  bootstrap above)
+- `settings/setupState` — permanent lock for the one-time automatic
+  first-manager bootstrap (`firstManagerCreated, status, claimedAt,
+  completedAt, managerUid`); written only by the Admin SDK, never by any
+  client (see First manager bootstrap above)
 
 ## Concurrency and double-booking strategy
 
@@ -343,7 +341,7 @@ npm run test:emulator  → 3 files, 51 tests passed  (Firestore rules + server b
                           `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
-npm run build           → succeeds (Turbopack production build, 26 routes)
+npm run build           → succeeds (Turbopack production build, 24 routes)
 ```
 
 Covered scenarios include: route/role protection expectations at the rules
@@ -360,7 +358,7 @@ placed it there), a manager's Friday override succeeding, and direct client
 writes to `bookings`/`slots`/`recurringSchedules`/`recurringExceptions` being
 rejected outright regardless of role or payload.
 
-For the first-manager web setup flow specifically
+For the automatic first-manager bootstrap specifically
 (`tests/emulator/setup.test.ts`, using a real Admin Auth instance against the
 Auth emulator): a too-short password is rejected and creates nothing; a
 successful run creates the Auth user, sets the manager claim, writes

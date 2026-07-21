@@ -11,12 +11,13 @@ import {
 } from "@/lib/server/setupService";
 
 /**
- * Exercises the trusted server layer for the one-time web-based
- * first-manager bootstrap (src/lib/server/setupService.ts), the same code
- * the POST /api/setup-first-manager route calls. Uses a real Admin Auth
- * instance against the Auth emulator (not the rules-unit-testing fake
- * auth context, which never touches the Auth emulator's user store) so
- * createUser/getUserByEmail/setCustomUserClaims are exercised for real.
+ * Exercises the trusted server layer for the one-time first-manager
+ * bootstrap (src/lib/server/setupService.ts), the same code
+ * src/instrumentation.ts calls automatically on every server startup. Uses
+ * a real Admin Auth instance against the Auth emulator (not the
+ * rules-unit-testing fake auth context, which never touches the Auth
+ * emulator's user store) so createUser/getUserByEmail/setCustomUserClaims
+ * are exercised for real.
  *
  * There is no setup-secret gate — "no active manager exists yet" is the
  * entire precondition, enforced by the permanent settings/setupState lock

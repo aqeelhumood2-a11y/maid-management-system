@@ -19,17 +19,12 @@ function peekRole(token: string): string | null {
   }
 }
 
-// Public even without a session: the one-time first-manager bootstrap page
-// is meant to be reached by someone who has no account yet. It enforces its
-// own permanent one-time lock server-side (see src/lib/server/setupService.ts).
-const PUBLIC_PATHS = new Set(["/login", "/setup-first-manager"]);
-
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const cookie = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
-  if (PUBLIC_PATHS.has(pathname)) {
-    if (pathname === "/login" && cookie) return NextResponse.redirect(new URL("/today", request.url));
+  if (pathname === "/login") {
+    if (cookie) return NextResponse.redirect(new URL("/today", request.url));
     return NextResponse.next();
   }
 
