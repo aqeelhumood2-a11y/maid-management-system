@@ -50,11 +50,11 @@ export default async function SetupFirstManagerPage() {
               البيئة التالية في Vercel ثم أعد النشر:
             </p>
             <p dir="ltr" className="rounded-lg bg-slate-50 p-3 text-left text-xs text-slate-600">
-              FIREBASE_ADMIN_PROJECT_ID
+              FIREBASE_ADMIN_PROJECT_ID <span className="text-slate-400">(or FIREBASE_PROJECT_ID)</span>
               <br />
-              FIREBASE_ADMIN_CLIENT_EMAIL
+              FIREBASE_ADMIN_CLIENT_EMAIL <span className="text-slate-400">(or FIREBASE_CLIENT_EMAIL)</span>
               <br />
-              FIREBASE_ADMIN_PRIVATE_KEY
+              FIREBASE_ADMIN_PRIVATE_KEY <span className="text-slate-400">(or FIREBASE_PRIVATE_KEY)</span>
             </p>
           </div>
         )}

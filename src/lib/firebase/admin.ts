@@ -24,24 +24,39 @@ function normalizePrivateKey(raw: string): string {
   return key.replace(/\\n/g, "\n");
 }
 
+/**
+ * Reads the first non-empty env var among `names`, in order. Used so the
+ * ADMIN-prefixed variable is preferred when both are set, without requiring
+ * anyone to rename/recreate variables already configured in Vercel.
+ */
+function readEnv(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
 function getAdminApp(): App {
   const apps = getApps();
   if (apps.length) return apps[0];
 
   if (process.env.FIREBASE_AUTH_EMULATOR_HOST || process.env.FIRESTORE_EMULATOR_HOST) {
     return initializeApp({
-      projectId: process.env.FIREBASE_ADMIN_PROJECT_ID || "demo-maid-management",
+      projectId:
+        readEnv("FIREBASE_ADMIN_PROJECT_ID", "FIREBASE_PROJECT_ID") || "demo-maid-management",
     });
   }
 
-  const projectId = process.env.FIREBASE_ADMIN_PROJECT_ID?.trim();
-  const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL?.trim();
-  const rawPrivateKey = process.env.FIREBASE_ADMIN_PRIVATE_KEY;
+  const projectId = readEnv("FIREBASE_ADMIN_PROJECT_ID", "FIREBASE_PROJECT_ID");
+  const clientEmail = readEnv("FIREBASE_ADMIN_CLIENT_EMAIL", "FIREBASE_CLIENT_EMAIL");
+  const rawPrivateKey = readEnv("FIREBASE_ADMIN_PRIVATE_KEY", "FIREBASE_PRIVATE_KEY");
   const privateKey = rawPrivateKey ? normalizePrivateKey(rawPrivateKey) : undefined;
 
   if (!projectId || !clientEmail || !privateKey) {
     throw new Error(
-      "Firebase Admin credentials are missing. Set FIREBASE_ADMIN_PROJECT_ID, FIREBASE_ADMIN_CLIENT_EMAIL and FIREBASE_ADMIN_PRIVATE_KEY."
+      "Firebase Admin credentials are missing. Set FIREBASE_ADMIN_PROJECT_ID (or FIREBASE_PROJECT_ID), " +
+        "FIREBASE_ADMIN_CLIENT_EMAIL (or FIREBASE_CLIENT_EMAIL) and FIREBASE_ADMIN_PRIVATE_KEY (or FIREBASE_PRIVATE_KEY)."
     );
   }
 
