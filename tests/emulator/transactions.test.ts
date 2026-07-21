@@ -193,6 +193,28 @@ describe("updateBookingServer — moving a booking into Friday", () => {
   });
 });
 
+describe("createBookingServer — area is a required free-typed string, not a managed reference", () => {
+  it("rejects a booking with an empty area and writes nothing", async () => {
+    await clearCollections();
+    await expect(
+      createBookingServer(db, { ...BASE_INPUT, areaId: "", areaName: "" }, EMPLOYEE)
+    ).rejects.toThrow(ServiceError);
+    const bookings = await db.collection("bookings").get();
+    expect(bookings.size).toBe(0);
+  });
+
+  it("accepts any manually typed area name, with no dependency on a managed areas collection", async () => {
+    await clearCollections();
+    const id = await createBookingServer(
+      db,
+      { ...BASE_INPUT, areaId: "الرفاع", areaName: "الرفاع" },
+      EMPLOYEE
+    );
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.areaName).toBe("الرفاع");
+  });
+});
+
 describe("createBookingServer — double-booking prevention", () => {
   it("rejects a second booking for the same worker/date/shift", async () => {
     await clearCollections();

@@ -4,7 +4,6 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner, SuccessBanner } from "@/components/ui/Feedback";
-import { useAreas } from "@/hooks/useAreas";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
@@ -15,7 +14,6 @@ import type { PaymentMethod, Shift } from "@/lib/types";
 
 export default function FutureBookingPage() {
   const { workers } = useWorkers();
-  const { areas } = useAreas();
   const { schedules } = useRecurringSchedules();
   const { exceptions } = useRecurringExceptions();
 
@@ -23,7 +21,7 @@ export default function FutureBookingPage() {
   const [date, setDate] = useState(today);
   const [shift, setShift] = useState<Shift>("morning");
   const [workerId, setWorkerId] = useState("");
-  const [areaId, setAreaId] = useState("");
+  const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
@@ -35,7 +33,6 @@ export default function FutureBookingPage() {
   const [fridayConfirmed, setFridayConfirmed] = useState(false);
 
   const { bookings } = useBookingsForDates(date ? [date] : []);
-  const activeAreas = areas.filter((a) => a.active);
   const friday = date ? isFriday(date) : false;
 
   const eligibleWorkers = useMemo(() => {
@@ -48,7 +45,7 @@ export default function FutureBookingPage() {
 
   function reset() {
     setWorkerId("");
-    setAreaId("");
+    setAreaName("");
     setHours("");
     setAmount("");
     setPaymentMethod("");
@@ -63,13 +60,13 @@ export default function FutureBookingPage() {
     setSuccess("");
 
     const worker = eligibleWorkers.find((x) => x.worker.id === workerId)?.worker;
-    const area = activeAreas.find((a) => a.id === areaId);
+    const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
 
     if (!date) return setError("اختر التاريخ");
     if (!worker) return setError("اختر عاملة متاحة");
-    if (!area) return setError("اختر المنطقة");
+    if (!trimmedArea) return setError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setError("أدخل مبلغاً صحيحاً");
     if (friday && !fridayConfirmed) return setError("يرجى تأكيد إنشاء حجز استثنائي يوم الجمعة");
@@ -81,8 +78,8 @@ export default function FutureBookingPage() {
         shift,
         workerId: worker.id,
         workerName: worker.name,
-        areaId: area.id,
-        areaName: area.name,
+        areaId: trimmedArea,
+        areaName: trimmedArea,
         hours: hoursNum,
         amount: amountNum,
         paymentMethod: paymentMethod || null,
@@ -157,14 +154,13 @@ export default function FutureBookingPage() {
           ))}
         </SelectInput>
 
-        <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-          <option value="">اختر المنطقة</option>
-          {activeAreas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </SelectInput>
+        <TextInput
+          label="المنطقة"
+          required
+          placeholder="اكتب اسم المنطقة"
+          value={areaName}
+          onChange={(e) => setAreaName(e.target.value)}
+        />
 
         <div className="grid grid-cols-2 gap-3">
           <TextInput label="عدد الساعات" type="number" required min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />

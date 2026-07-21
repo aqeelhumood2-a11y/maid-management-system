@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/Button";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
 import { useManagerSession } from "@/context/ManagerSessionContext";
-import { useAreas } from "@/hooks/useAreas";
 import {
   ApiError,
   cancelBooking,
@@ -243,9 +242,7 @@ function EditForm({
   onCancel: () => void;
   onSubmit: (fields: EditableBookingFields) => void;
 }) {
-  const { areas } = useAreas();
-  const activeAreas = areas.filter((a) => a.active || a.id === initial.areaId);
-  const [areaId, setAreaId] = useState(initial.areaId);
+  const [areaName, setAreaName] = useState(initial.areaName);
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(initial.paymentMethod ?? "");
@@ -255,16 +252,16 @@ function EditForm({
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const area = activeAreas.find((a) => a.id === areaId);
+    const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
-    if (!area) return setLocalError("اختر المنطقة");
+    if (!trimmedArea) return setLocalError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setLocalError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setLocalError("أدخل مبلغاً صحيحاً");
     setLocalError("");
     onSubmit({
-      areaId: area.id,
-      areaName: area.name,
+      areaId: trimmedArea,
+      areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
       paymentMethod: paymentMethod || null,
@@ -276,13 +273,13 @@ function EditForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <ErrorBanner message={error || localError} />
-      <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-        {activeAreas.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </SelectInput>
+      <TextInput
+        label="المنطقة"
+        required
+        placeholder="اكتب اسم المنطقة"
+        value={areaName}
+        onChange={(e) => setAreaName(e.target.value)}
+      />
       <div className="grid grid-cols-2 gap-3">
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
@@ -348,30 +345,27 @@ function RecurringEditForm({
   onCancel: () => void;
   onSubmit: (scope: RecurringEditScope, fields: EditableBookingFields) => void;
 }) {
-  const { areas } = useAreas();
-  const initialArea = areas.find((a) => a.name === initial.areaName);
   const [scope, setScope] = useState<RecurringEditScope>("single");
-  const [areaId, setAreaId] = useState(initialArea?.id ?? "");
+  const [areaName, setAreaName] = useState(initial.areaName ?? "");
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(initial.paymentMethod ?? "");
   const [customerPhone, setCustomerPhone] = useState(initial.customerPhone ?? "");
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation ?? "");
   const [localError, setLocalError] = useState("");
-  const activeAreas = areas.filter((a) => a.active || a.id === areaId);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const area = activeAreas.find((a) => a.id === areaId);
+    const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
-    if (!area) return setLocalError("اختر المنطقة");
+    if (!trimmedArea) return setLocalError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setLocalError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setLocalError("أدخل مبلغاً صحيحاً");
     setLocalError("");
     onSubmit(scope, {
-      areaId: area.id,
-      areaName: area.name,
+      areaId: trimmedArea,
+      areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
       paymentMethod: paymentMethod || null,
@@ -392,14 +386,13 @@ function RecurringEditForm({
           { value: "entire", label: "الجدول المتكرر كاملًا" },
         ]}
       />
-      <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-        <option value="">اختر المنطقة</option>
-        {activeAreas.map((a) => (
-          <option key={a.id} value={a.id}>
-            {a.name}
-          </option>
-        ))}
-      </SelectInput>
+      <TextInput
+        label="المنطقة"
+        required
+        placeholder="اكتب اسم المنطقة"
+        value={areaName}
+        onChange={(e) => setAreaName(e.target.value)}
+      />
       <div className="grid grid-cols-2 gap-3">
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />

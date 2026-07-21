@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { SelectInput, TextArea, TextInput } from "@/components/ui/Field";
 import { ErrorBanner, Spinner, SuccessBanner } from "@/components/ui/Feedback";
-import { useAreas } from "@/hooks/useAreas";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useRecurringSchedules } from "@/hooks/useRecurring";
 import { dayOfWeek, todayBahrain, weekdayLabelAr } from "@/lib/date";
@@ -91,13 +90,11 @@ function nextIsoForDow(dow: number): string {
 
 function AddRecurringModal({ onClose }: { onClose: () => void }) {
   const { workers } = useWorkers();
-  const { areas } = useAreas();
   const activeWorkers = workers.filter((w) => w.active);
-  const activeAreas = areas.filter((a) => a.active);
   const days = availableDaysOfWeek();
 
   const [workerId, setWorkerId] = useState("");
-  const [areaId, setAreaId] = useState("");
+  const [areaName, setAreaName] = useState("");
   const [shift, setShift] = useState<Shift>("morning");
   const [day, setDay] = useState(days[0].value);
   const [hours, setHours] = useState("");
@@ -112,11 +109,11 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const worker = activeWorkers.find((w) => w.id === workerId);
-    const area = activeAreas.find((a) => a.id === areaId);
+    const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
     if (!worker) return setError("اختر العاملة");
-    if (!area) return setError("اختر المنطقة");
+    if (!trimmedArea) return setError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setError("أدخل مبلغاً صحيحاً");
 
@@ -126,8 +123,8 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
       await createRecurringSchedule({
         workerId: worker.id,
         workerName: worker.name,
-        areaId: area.id,
-        areaName: area.name,
+        areaId: trimmedArea,
+        areaName: trimmedArea,
         shift,
         dayOfWeek: day,
         hours: hoursNum,
@@ -157,14 +154,13 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
             </option>
           ))}
         </SelectInput>
-        <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-          <option value="">اختر المنطقة</option>
-          {activeAreas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </SelectInput>
+        <TextInput
+          label="المنطقة"
+          required
+          placeholder="اكتب اسم المنطقة"
+          value={areaName}
+          onChange={(e) => setAreaName(e.target.value)}
+        />
         <div className="grid grid-cols-2 gap-3">
           <SelectInput label="اليوم" required value={day} onChange={(e) => setDay(Number(e.target.value))}>
             {days.map((d) => (
@@ -205,11 +201,9 @@ function EditRecurringModal({
   recurring: RecurringSchedule;
   onClose: () => void;
 }) {
-  const { areas } = useAreas();
-  const activeAreas = areas.filter((a) => a.active || a.id === recurring.areaId);
   const [scope, setScope] = useState<RecurringEditScope>("entire");
   const [effectiveDate, setEffectiveDate] = useState(nextIsoForDow(recurring.dayOfWeek));
-  const [areaId, setAreaId] = useState(recurring.areaId);
+  const [areaName, setAreaName] = useState(recurring.areaName);
   const [hours, setHours] = useState(String(recurring.hours));
   const [amount, setAmount] = useState(String(recurring.amount));
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(recurring.paymentMethod ?? "");
@@ -220,10 +214,10 @@ function EditRecurringModal({
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const area = activeAreas.find((a) => a.id === areaId);
+    const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
-    if (!area) return setError("اختر المنطقة");
+    if (!trimmedArea) return setError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setError("أدخل مبلغاً صحيحاً");
     if (scope !== "entire" && dayOfWeek(effectiveDate) !== recurring.dayOfWeek) {
@@ -238,8 +232,8 @@ function EditRecurringModal({
         date: effectiveDate,
         scope,
         fields: {
-          areaId: area.id,
-          areaName: area.name,
+          areaId: trimmedArea,
+          areaName: trimmedArea,
           hours: hoursNum,
           amount: amountNum,
           paymentMethod: paymentMethod || null,
@@ -279,13 +273,13 @@ function EditRecurringModal({
         {scope !== "entire" && (
           <TextInput label="التاريخ" type="date" required value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
         )}
-        <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-          {activeAreas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </SelectInput>
+        <TextInput
+          label="المنطقة"
+          required
+          placeholder="اكتب اسم المنطقة"
+          value={areaName}
+          onChange={(e) => setAreaName(e.target.value)}
+        />
         <div className="grid grid-cols-2 gap-3">
           <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
           <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />

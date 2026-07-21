@@ -5,7 +5,6 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { TextInput, SelectInput, TextArea } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
-import { useAreas } from "@/hooks/useAreas";
 import { ApiError, createBooking } from "@/lib/booking";
 import { formatDateAr, weekdayLabelAr } from "@/lib/date";
 import type { BookingSource, PaymentMethod, Shift, Worker } from "@/lib/types";
@@ -29,10 +28,7 @@ export function QuickBookingModal({
   source: BookingSource;
   onSuccess: () => void;
 }) {
-  const { areas } = useAreas();
-  const activeAreas = areas.filter((a) => a.active);
-
-  const [areaId, setAreaId] = useState("");
+  const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
@@ -42,7 +38,7 @@ export function QuickBookingModal({
   const [loading, setLoading] = useState(false);
 
   function reset() {
-    setAreaId("");
+    setAreaName("");
     setHours("");
     setAmount("");
     setPaymentMethod("");
@@ -55,9 +51,9 @@ export function QuickBookingModal({
     e.preventDefault();
     setError("");
 
-    const area = activeAreas.find((a) => a.id === areaId);
-    if (!area) {
-      setError("اختر المنطقة");
+    const trimmedArea = areaName.trim();
+    if (!trimmedArea) {
+      setError("أدخل اسم المنطقة");
       return;
     }
     const hoursNum = Number(hours);
@@ -78,8 +74,8 @@ export function QuickBookingModal({
         shift,
         workerId: worker.id,
         workerName: worker.name,
-        areaId: area.id,
-        areaName: area.name,
+        areaId: trimmedArea,
+        areaName: trimmedArea,
         hours: hoursNum,
         amount: amountNum,
         paymentMethod: paymentMethod || null,
@@ -116,14 +112,13 @@ export function QuickBookingModal({
           </p>
         </div>
 
-        <SelectInput label="المنطقة" required value={areaId} onChange={(e) => setAreaId(e.target.value)}>
-          <option value="">اختر المنطقة</option>
-          {activeAreas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </SelectInput>
+        <TextInput
+          label="المنطقة"
+          required
+          placeholder="اكتب اسم المنطقة"
+          value={areaName}
+          onChange={(e) => setAreaName(e.target.value)}
+        />
 
         <div className="grid grid-cols-2 gap-3">
           <TextInput

@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextInput } from "@/components/ui/Field";
 import { EmptyState, Spinner } from "@/components/ui/Feedback";
-import { useAreas } from "@/hooks/useAreas";
 import { usePolledFetch } from "@/hooks/usePolledFetch";
 import { useWorkers } from "@/hooks/useWorkers";
 import { addDaysToDateStr, formatDateAr, todayBahrain, weekStart } from "@/lib/date";
@@ -17,7 +16,6 @@ type RangeMode = "day" | "range" | "week" | "month" | "all";
 
 export default function ReportsPage() {
   const { workers } = useWorkers();
-  const { areas } = useAreas();
   const today = todayBahrain();
 
   const [rangeMode, setRangeMode] = useState<RangeMode>("month");
@@ -25,7 +23,7 @@ export default function ReportsPage() {
   const [rangeStart, setRangeStart] = useState(addDaysToDateStr(today, -29));
   const [rangeEnd, setRangeEnd] = useState(today);
   const [workerId, setWorkerId] = useState("");
-  const [areaId, setAreaId] = useState("");
+  const [areaName, setAreaName] = useState("");
   const [paidFilter, setPaidFilter] = useState<"" | "paid" | "unpaid">("");
   const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
   const [shift, setShift] = useState<"" | Shift>("");
@@ -54,17 +52,22 @@ export default function ReportsPage() {
     [start, end]
   );
 
+  const areaOptions = useMemo(() => {
+    const names = new Set((data ?? []).map((b) => b.areaName).filter(Boolean));
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [data]);
+
   const filtered = useMemo(() => {
     return (data ?? []).filter((b) => {
       if (workerId && b.workerId !== workerId) return false;
-      if (areaId && b.areaId !== areaId) return false;
+      if (areaName && b.areaName !== areaName) return false;
       if (shift && b.shift !== shift) return false;
       if (paidFilter === "paid" && !b.paid) return false;
       if (paidFilter === "unpaid" && b.paid) return false;
       if (paymentMethod && b.paymentMethod !== paymentMethod) return false;
       return true;
     });
-  }, [data, workerId, areaId, shift, paidFilter, paymentMethod]);
+  }, [data, workerId, areaName, shift, paidFilter, paymentMethod]);
 
   const totals = useMemo(() => {
     const totalHours = filtered.reduce((s, b) => s + b.hours, 0);
@@ -76,7 +79,7 @@ export default function ReportsPage() {
   function resetFilters() {
     setRangeMode("month");
     setWorkerId("");
-    setAreaId("");
+    setAreaName("");
     setPaidFilter("");
     setPaymentMethod("");
     setShift("");
@@ -118,11 +121,11 @@ export default function ReportsPage() {
             </option>
           ))}
         </SelectInput>
-        <SelectInput label="المنطقة" value={areaId} onChange={(e) => setAreaId(e.target.value)}>
+        <SelectInput label="المنطقة" value={areaName} onChange={(e) => setAreaName(e.target.value)}>
           <option value="">الكل</option>
-          {areas.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
+          {areaOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
             </option>
           ))}
         </SelectInput>
