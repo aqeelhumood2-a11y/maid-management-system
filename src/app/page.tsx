@@ -1,6 +1,7 @@
 import { EmployeeShell } from "@/components/layout/EmployeeShell";
 import { TodaySchedule } from "@/components/schedule/TodaySchedule";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getBusinessName } from "@/lib/server/settings";
 
 /**
  * The root URL — no login, no redirect, this IS the Employee screen.
@@ -8,8 +9,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
  * never asked for any credential.
  */
 export default async function RootPage() {
-  const settingsDoc = await getAdminDb().collection("settings").doc("app").get();
-  const businessName = (settingsDoc.data()?.businessName as string | undefined) || "نظام إدارة العاملات";
+  const businessName = await getBusinessName(getAdminDb());
 
   return (
     <EmployeeShell businessName={businessName}>

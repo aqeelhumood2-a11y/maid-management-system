@@ -1,6 +1,7 @@
 import { EmployeeShell } from "@/components/layout/EmployeeShell";
 import { RouteSchedule } from "@/components/schedule/RouteSchedule";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getBusinessName } from "@/lib/server/settings";
 
 /**
  * Route Schedule — one of the exactly two screens an employee session may
@@ -9,8 +10,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
  * redacts those for a non-manager session).
  */
 export default async function RoutesPage() {
-  const settingsDoc = await getAdminDb().collection("settings").doc("app").get();
-  const businessName = (settingsDoc.data()?.businessName as string | undefined) || "نظام إدارة العاملات";
+  const businessName = await getBusinessName(getAdminDb());
 
   return (
     <EmployeeShell businessName={businessName}>

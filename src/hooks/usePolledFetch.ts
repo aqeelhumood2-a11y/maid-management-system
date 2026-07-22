@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState, type DependencyList } from "react";
 
-const DEFAULT_INTERVAL_MS = 4000;
+/**
+ * Every page mounts several of these hooks at once (workers, bookings,
+ * recurring schedules, exceptions, route order), each independently
+ * re-reading its whole collection on every tick — that read volume is what
+ * exhausts the Firestore free-tier daily quota if the interval is too
+ * aggressive. 20s keeps the schedule feeling live for a booking/coordination
+ * tool while cutting read volume ~5x versus the old 4s interval.
+ */
+const DEFAULT_INTERVAL_MS = 20000;
 
 /**
  * Replaces Firestore's onSnapshot real-time listeners now that there is no
@@ -38,10 +46,36 @@ export function usePolledFetch<T>(
     }
 
     load();
-    const timer = setInterval(load, intervalMs);
+
+    // A background tab (staff leaving the schedule open all day) must not
+    // keep burning read quota for a screen nobody is looking at — pause the
+    // interval entirely while hidden, and refresh immediately on return.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    function startTimer() {
+      if (timer === null) timer = setInterval(load, intervalMs);
+    }
+    function stopTimer() {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+    function onVisibilityChange() {
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        load();
+        startTimer();
+      }
+    }
+
+    if (typeof document !== "undefined" && !document.hidden) startTimer();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stopTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { isManagerSession } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getBusinessName } from "@/lib/server/settings";
 import { ManagerShell } from "@/components/layout/ManagerShell";
 
 /**
@@ -12,8 +13,7 @@ import { ManagerShell } from "@/components/layout/ManagerShell";
 export default async function ManagerLayout({ children }: { children: React.ReactNode }) {
   if (!(await isManagerSession())) redirect("/");
 
-  const settingsDoc = await getAdminDb().collection("settings").doc("app").get();
-  const businessName = (settingsDoc.data()?.businessName as string | undefined) || "نظام إدارة العاملات";
+  const businessName = await getBusinessName(getAdminDb());
 
   return <ManagerShell businessName={businessName}>{children}</ManagerShell>;
 }

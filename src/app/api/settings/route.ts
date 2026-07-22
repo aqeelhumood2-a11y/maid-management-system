@@ -15,9 +15,13 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 /** Read is open to everyone — the business name is shown in the header. */
 export async function GET() {
-  const snap = await getAdminDb().collection("settings").doc("app").get();
-  const settings = snap.exists ? (snap.data() as AppSettings) : DEFAULT_SETTINGS;
-  return NextResponse.json({ settings });
+  try {
+    const snap = await getAdminDb().collection("settings").doc("app").get();
+    const settings = snap.exists ? (snap.data() as AppSettings) : DEFAULT_SETTINGS;
+    return NextResponse.json({ settings });
+  } catch {
+    return NextResponse.json({ settings: DEFAULT_SETTINGS });
+  }
 }
 
 export async function PATCH(request: Request) {
