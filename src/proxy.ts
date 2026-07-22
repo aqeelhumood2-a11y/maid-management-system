@@ -3,8 +3,10 @@ import { isValidManagerSessionToken, MANAGER_SESSION_COOKIE_NAME } from "@/lib/s
 
 /**
  * There is no Firebase Authentication in this app, and no login page.
- * Employee routes ("/", "/weekly") are open to everyone — nothing to gate.
- * The only thing Proxy protects is "/manager": an optimistic, fast redirect
+ * Employee routes ("/", "/routes") are open to everyone — nothing to gate.
+ * Weekly Schedule lives exclusively under "/manager/weekly" now, so an
+ * employee session never reaches it at all. The only thing Proxy protects
+ * is "/manager": an optimistic, fast redirect
  * for the obvious case (missing/invalid cookie) so a stale bookmark doesn't
  * even reach the page. The real, authoritative check happens again in
  * src/app/manager/layout.tsx (a Server Component) on every request — Proxy
