@@ -32,6 +32,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   area_edited: "تعديل منطقة",
   area_deactivated: "إيقاف منطقة",
   settings_updated: "تحديث الإعدادات",
+  manager_password_changed: "تغيير كلمة مرور المدير",
 };
 
 export default function ActivityPage() {

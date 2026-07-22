@@ -92,41 +92,62 @@ access** for why those are handled differently.
 
 There is no login page, no setup flow, and nothing to configure by hand or
 via an environment variable. The entire manager surface is gated by one
-shared password, hardcoded server-side in `src/lib/server/managerAuth.ts`:
+shared password, checked server-side. A fresh install starts with a
+hardcoded default in `src/lib/server/managerAuth.ts`:
 
 ```
 33199666
 ```
 
-- `POST /api/manager/login` checks the submitted password against this
-  constant using a **timing-safe comparison** (`crypto.timingSafeEqual`),
-  never a plain `===`. It is never sent to, compared in, or hardcoded into
-  any client-side ("use client") code — the browser only ever sends the
-  password the visitor typed, over HTTPS, and receives a cookie back.
+— but the manager can change it at any time from Site Settings → Change
+Password (see below); once changed, that becomes the only password that
+works, the same as if it had always been that value.
+
+- `POST /api/manager/login` checks the submitted password with
+  `verifyManagerPassword` (`src/lib/server/managerAuth.ts`): if the manager
+  has ever changed the password, it compares against the stored salted hash
+  (`scrypt` + `crypto.timingSafeEqual`, never a plain `===`); otherwise it
+  falls back to the original hardcoded default, using the same
+  timing-safe comparison it always has. Nothing password-related is ever
+  sent to, compared in, or hardcoded into any client-side ("use client")
+  code — the browser only ever sends the password the visitor typed, over
+  HTTPS, and receives a cookie back.
 - On a match, the server issues a **signed, expiring session token**
   (HMAC-SHA256 over an expiry timestamp, keyed by a second server-only
   secret in the same file) and sets it as an `httpOnly` cookie. This is not
-  a JWT library or Firebase Auth under the hood — it's ~60 lines of plain
-  Node `crypto`, verified in `src/lib/server/managerAuth.ts` and unit-tested
-  in `tests/unit/managerAuth.test.ts` (round-trip, tampered payload,
-  tampered signature, expiry).
+  a JWT library or Firebase Auth under the hood — it's plain Node `crypto`,
+  verified in `src/lib/server/managerAuth.ts` and unit-tested in
+  `tests/unit/managerAuth.test.ts` (round-trip, tampered payload, tampered
+  signature, expiry) plus `tests/emulator/managerAuth.test.ts` for the
+  changeable-password storage.
 - A wrong password returns `401` and sets no cookie; the visitor simply
   stays on the Employee screen with an inline error, exactly as specified.
 - Repeated wrong attempts from the same IP are throttled (8 attempts / 10
   minutes, in-memory) as a speed bump against casual brute-forcing — note
   this resets on a cold serverless start and isn't shared across instances,
-  so treat it as a deterrent, not a hard guarantee, for an 8-digit password.
+  so treat it as a deterrent, not a hard guarantee.
 - `src/proxy.ts` does a fast, optimistic signature+expiry check on every
   `/manager/*` request and redirects to `/` if it fails; `src/app/manager/layout.tsx`
   (a Server Component) re-checks the exact same thing authoritatively on
   every request — Proxy is a UX shortcut, not the security boundary.
 - Logging out (`DELETE /api/manager/login`) just clears the cookie.
 
-**Change the password** by editing `MANAGER_PASSWORD` in
-`src/lib/server/managerAuth.ts` and redeploying — it is deliberately not an
-environment variable, matching this project's established pattern of
-committed, rotatable one-time/shared credentials over adding new Vercel
-config steps.
+**Change Password** (Manager Dashboard → Site Settings → كلمة المرور):
+enter the current password, a new password, and confirm it.
+`PATCH /api/manager/password` (manager-only, `src/app/api/manager/password/route.ts`)
+re-verifies the current password server-side before accepting the change —
+holding a valid session cookie proves "logged in as manager", not "knows
+the password", so the check happens again here independently.
+`changeManagerPasswordServer` hashes the new password (`scrypt` with a
+random salt) and writes it to `settings/managerAuth` (a dedicated document,
+separate from `settings/app`'s business-name/timezone fields, so the
+public, unauthenticated `GET /api/settings` route — scoped to `settings/app`
+only — never touches it). Only the hash is ever persisted; the plaintext
+password is never stored or logged. The change takes effect immediately for
+the *next* login (the current session stays logged in); the previous
+password — including the original hardcoded default — stops working right
+away. Every change is logged as `manager_password_changed`, with no
+password material in the log entry.
 
 ## Data access model
 
@@ -297,8 +318,10 @@ in the trusted server layer, independent of the route or the client:
 - **Route Schedule**: whoever is on the ground (employee or manager) marks a
   booking dropped off, then picked up, from one same-day list. See **Route
   Schedule** below.
-- **Routes (manager)**: manager picks a date + shift and gets a copyable/callable list of
-  worker → area → customer phone/location for active bookings only.
+- **Daily Route (manager)**: manager picks a date + shift (Morning/Evening,
+  fully independent of each other) and sees a copyable/callable list of
+  worker → area → customer phone → customer location link for active
+  bookings, with an Edit button per row. See **Daily Route** below.
 
 ## Manager Payment Tracking
 
@@ -492,6 +515,41 @@ an employee session can write to.
 - Every transition is logged (`route_dropped_off`, `route_picked_up`,
   `route_dropoff_reset`, `route_pickup_reset`) to `activityLogs`.
 
+## Daily Route
+
+`/manager/routes` ("خطوط السير", manager-only, not to be confused with the
+employee-facing **Route Schedule** above) is the Manager Dashboard's daily
+route list, scoped by a Date + Shift (Morning/Evening) selector — this is
+distinct from the **Weekly Booking Grid**/Weekly Schedule and untouched by
+it.
+
+- **Morning and Evening are completely independent routes.** The Shift
+  selector is local `useState`; switching it re-runs `resolveCell` for that
+  shift alone against the same fetched-once `bookings` array for the
+  selected date (`resolveCell` already filters by `shift` internally — see
+  `src/lib/availability.ts`). Every booking is its own Firestore document,
+  keyed by worker/date/**shift**, so editing or cancelling a morning booking
+  can never touch the corresponding evening document for the same worker
+  and date — there is no shared mutable state between the two shifts at
+  all, at either the data or the UI layer.
+- **Editable from the Manager Dashboard**: each row now has a "تعديل" button
+  that opens the exact same `BookingDetailsModal` used everywhere else in
+  the app (Daily/Weekly Schedule, the Weekly Booking Grid) — full edit
+  (including "Edit booking date" / "Change worker"), cancel, and payment,
+  all already manager-gated. No new mutation logic was added; this page just
+  gained a way to open the existing one.
+- **Customer Phone Number**: shown as a `tel:` link (unchanged from before).
+- **Customer Location Link**: `customerLocation` is a free-typed address
+  description, not a URL, so it's rendered as a clickable link to a Google
+  Maps search for that text (`mapsLinkFor()` in
+  `src/app/manager/routes/page.tsx`) — opens in a new tab, works for any
+  address string without requiring a separate geocoded field.
+- **Creating/loading**: booking creation still happens through the existing
+  flows (Daily/Weekly Schedule, Future Booking, Weekly Booking Grid,
+  Recurring Schedule) exactly as before — this page was already, and
+  remains, a view+edit surface over those bookings, not a third way to
+  create one from scratch.
+
 ## Weekly Booking Grid
 
 `/manager/weekly-grid` (manager-only) is the fast path for filling a
@@ -653,18 +711,20 @@ date" and "Change worker"), the Weekly Booking Grid (fill a worker's whole
 week from one screen), Future Booking (manual date + Friday-holiday
 override with explicit confirmation), Worker Management (add/edit/activate/
 deactivate, history preserved), Recurring Weekly Schedule (create with any
-start date + 3-way edit scope + 2-way cancel scope), Routes (date+shift →
-worker/area/phone/location, active bookings only, tap-to-call), Route
-Schedule reset controls (undo a drop-off/pickup), Reports (worker/area/
-date/date-range/week/month/paid/payment method/shift filters with totals
-and a reset button), Payments (mark paid/edit/revert with method + amount +
-audit trail, filter by All/Paid/Unpaid/Cash/BenefitPay), Dashboard Payment
+start date + 3-way edit scope + 2-way cancel scope), Daily Route (date +
+independent Morning/Evening shift selector, phone + Google Maps location
+link, per-row edit reusing the standard booking form), Route Schedule reset
+controls (undo a drop-off/pickup), Reports (worker/area/date/date-range/
+week/month/paid/payment method/shift filters with totals and a reset
+button), Payments (mark paid/edit/revert with method + amount + audit
+trail, filter by All/Paid/Unpaid/Cash/BenefitPay), Dashboard Payment
 Summary (unpaid/paid-today/paid-this-week/cash/benefit/grand totals),
 Financial Settlement (per-worker completed/paid/earnings with daily/weekly/
 monthly breakdowns, Workers Total, Overall Total, Manager Net, Today/Week/
 Month/custom-range filters, PDF and Excel export), Activity History
 (filterable, immutable, including payment-, settlement- and route-status-
-specific action types), Settings (business name, area CRUD).
+specific action types), Settings (business name, area CRUD, Change
+Password).
 
 ## Tests and exact results
 
@@ -673,11 +733,12 @@ npm run test           → 7 files, 58 tests passed  (date / availability / recu
                           logic, managerAuth password/session-token, scheduleCellLabel,
                           payment- and amount-redaction security, and financial-settlement
                           payout-formula unit tests)
-npm run test:emulator  → 4 files, 89 tests passed  (Firestore deny-all rules for every
+npm run test:emulator  → 5 files, 98 tests passed  (Firestore deny-all rules for every
                           collection, server booking/recurring/payment/route-status/
-                          financial-settlement transaction tests, and server catalog
-                          (areas/workers/settings) tests — run against the Firebase
-                          Emulator Suite via `firebase emulators:exec`)
+                          financial-settlement transaction tests, server catalog
+                          (areas/workers/settings) tests, and the changeable manager-
+                          password store — run against the Firebase Emulator Suite via
+                          `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
 npm run build           → succeeds (Turbopack production build)
@@ -727,6 +788,15 @@ for bookings paid before this feature existed, `workersTotal`/`overallTotal`/
 `managerNet` arithmetic, daily→weekly→monthly aggregation consistency,
 manager-only rejection of `getFinancialSummaryServer`, and the
 `settlement_calculated` activity-log entry written for every calculation.
+
+Manager password coverage: the default hardcoded password still works
+before any change is ever made, rejecting a non-manager actor or an
+incorrect current password (and writing nothing), rejecting a too-short new
+password, the new password working immediately while the old default stops
+working, requiring the most-recently-set password (not the original
+default) for a subsequent change, the plaintext password never being
+persisted, and the `manager_password_changed` activity entry carrying no
+password material.
 
 ## Known limitations
 

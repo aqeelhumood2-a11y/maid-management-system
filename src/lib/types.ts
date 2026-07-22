@@ -141,6 +141,7 @@ export type ActivityActionType =
   | "recurring_created"
   | "recurring_edited"
   | "recurring_cancelled"
+  | "manager_password_changed"
   | "area_added"
   | "area_edited"
   | "area_deactivated"

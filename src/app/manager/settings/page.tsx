@@ -7,10 +7,11 @@ import { Badge, ErrorBanner, Spinner, SuccessBanner } from "@/components/ui/Feed
 import { useAreas } from "@/hooks/useAreas";
 import { useSettings } from "@/hooks/useSettings";
 import { createArea, setAreaActive, updateArea } from "@/lib/areas";
-import { updateSettings } from "@/lib/settings";
+import { ApiError } from "@/lib/booking";
+import { changeManagerPassword, updateSettings } from "@/lib/settings";
 import type { Area } from "@/lib/types";
 
-type Tab = "general" | "areas";
+type Tab = "general" | "areas" | "password";
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("general");
@@ -23,6 +24,7 @@ export default function SettingsPage() {
           [
             ["general", "عام"],
             ["areas", "المناطق"],
+            ["password", "كلمة المرور"],
           ] as [Tab, string][]
         ).map(([value, label]) => (
           <button
@@ -39,7 +41,74 @@ export default function SettingsPage() {
 
       {tab === "general" && <GeneralTab />}
       {tab === "areas" && <AreasTab />}
+      {tab === "password" && <PasswordTab />}
     </div>
+  );
+}
+
+function PasswordTab() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (!currentPassword) return setError("أدخل كلمة المرور الحالية");
+    if (newPassword.length < 4) return setError("كلمة المرور الجديدة يجب أن تكون 4 أحرف على الأقل");
+    if (newPassword !== confirmPassword) return setError("كلمتا المرور الجديدتان غير متطابقتين");
+
+    setSaving(true);
+    try {
+      await changeManagerPassword(currentPassword, newPassword);
+      setSuccess("تم تغيير كلمة المرور بنجاح");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر تغيير كلمة المرور");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="max-w-md space-y-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+      <ErrorBanner message={error} />
+      <SuccessBanner message={success} />
+      <TextInput
+        label="كلمة المرور الحالية"
+        type="password"
+        required
+        dir="ltr"
+        value={currentPassword}
+        onChange={(e) => setCurrentPassword(e.target.value)}
+      />
+      <TextInput
+        label="كلمة المرور الجديدة"
+        type="password"
+        required
+        dir="ltr"
+        value={newPassword}
+        onChange={(e) => setNewPassword(e.target.value)}
+      />
+      <TextInput
+        label="تأكيد كلمة المرور الجديدة"
+        type="password"
+        required
+        dir="ltr"
+        value={confirmPassword}
+        onChange={(e) => setConfirmPassword(e.target.value)}
+      />
+      <Button type="submit" loading={saving}>
+        حفظ كلمة المرور
+      </Button>
+    </form>
   );
 }
 

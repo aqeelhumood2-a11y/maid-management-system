@@ -6,11 +6,11 @@ import { MANAGER_ACTOR } from "@/lib/auth/server";
 import {
   clearAttempts,
   createManagerSessionToken,
-  isManagerPasswordCorrect,
   isRateLimited,
   MANAGER_SESSION_COOKIE_NAME,
   MANAGER_SESSION_MAX_AGE_SECONDS,
   recordFailedAttempt,
+  verifyManagerPassword,
 } from "@/lib/server/managerAuth";
 
 async function clientIp(): Promise<string> {
@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
   const { password } = (await request.json().catch(() => ({}))) as { password?: string };
 
-  if (!isManagerPasswordCorrect(password ?? "")) {
+  if (!(await verifyManagerPassword(getAdminDb(), password ?? ""))) {
     recordFailedAttempt(ip);
     return NextResponse.json({ error: "كلمة المرور غير صحيحة" }, { status: 401 });
   }
