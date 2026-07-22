@@ -34,6 +34,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   area_deactivated: "إيقاف منطقة",
   settings_updated: "تحديث الإعدادات",
   manager_password_changed: "تغيير كلمة مرور المدير",
+  payment_stats_initialized: "تهيئة إحصائيات المدفوعات",
 };
 
 export default function ActivityPage() {
@@ -42,6 +43,7 @@ export default function ActivityPage() {
   const { data, loading } = usePolledFetch(async () => {
     const url = type ? `/api/activity?type=${encodeURIComponent(type)}` : "/api/activity";
     const res = await fetch(url);
+    if (!res.ok) throw new Error("تعذر تحميل سجل النشاط");
     const json = (await res.json()) as { logs?: ActivityLog[] };
     return json.logs ?? [];
   }, [type]);

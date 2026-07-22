@@ -13,6 +13,14 @@ import { useEffect, useRef, useState, type DependencyList } from "react";
 const DEFAULT_INTERVAL_MS = 20000;
 
 /**
+ * For data that rarely changes during a working session (worker roster,
+ * areas, business settings, recurring schedule definitions) — refreshing it
+ * every 20s like live booking data buys nothing but extra reads. Pass this
+ * as the interval override for hooks backing that kind of data.
+ */
+export const SLOW_INTERVAL_MS = 60000;
+
+/**
  * Replaces Firestore's onSnapshot real-time listeners now that there is no
  * more Firebase Authentication to gate direct client reads with — every
  * read goes through a server API route backed by the Admin SDK instead (see

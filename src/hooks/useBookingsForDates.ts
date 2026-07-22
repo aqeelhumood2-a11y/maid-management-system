@@ -10,6 +10,7 @@ export function useBookingsForDates(dates: string[]) {
   const { data, loading } = usePolledFetch(async () => {
     if (dates.length === 0) return [] as Booking[];
     const res = await fetch(`/api/bookings?dates=${encodeURIComponent(key)}`);
+    if (!res.ok) throw new Error("تعذر تحميل الحجوزات");
     const json = (await res.json()) as { bookings?: Booking[] };
     return json.bookings ?? [];
   }, [key]);

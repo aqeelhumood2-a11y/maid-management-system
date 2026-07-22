@@ -1,6 +1,6 @@
 "use client";
 
-import { usePolledFetch } from "./usePolledFetch";
+import { usePolledFetch, SLOW_INTERVAL_MS } from "./usePolledFetch";
 import type { AppSettings } from "@/lib/types";
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -11,11 +11,16 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 export function useSettings() {
-  const { data, loading } = usePolledFetch(async () => {
-    const res = await fetch("/api/settings");
-    const json = (await res.json()) as { settings?: AppSettings };
-    return json.settings ?? DEFAULT_SETTINGS;
-  }, []);
+  const { data, loading } = usePolledFetch(
+    async () => {
+      const res = await fetch("/api/settings");
+      if (!res.ok) throw new Error("تعذر تحميل الإعدادات");
+      const json = (await res.json()) as { settings?: AppSettings };
+      return json.settings ?? DEFAULT_SETTINGS;
+    },
+    [],
+    SLOW_INTERVAL_MS
+  );
 
   return { settings: data ?? DEFAULT_SETTINGS, loading };
 }

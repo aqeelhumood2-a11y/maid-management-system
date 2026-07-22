@@ -27,6 +27,7 @@ export default function PaymentsPage() {
   const [filter, setFilter] = useState<PaymentFilter>("unpaid");
   const { data, loading } = usePolledFetch(async () => {
     const res = await fetch(`/api/bookings/payments?filter=${filter}`);
+    if (!res.ok) throw new Error("تعذر تحميل المدفوعات");
     const json = (await res.json()) as { bookings?: Booking[] };
     return json.bookings ?? [];
   }, [filter]);

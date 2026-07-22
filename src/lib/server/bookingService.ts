@@ -1,5 +1,5 @@
 import { FieldValue, type Firestore, type Transaction } from "firebase-admin/firestore";
-import { isFriday } from "../date";
+import { dateInBahrain, isFriday, todayBahrain } from "../date";
 import { slotId } from "../availability";
 import { ServiceError } from "./errors";
 import type {
@@ -168,6 +168,104 @@ function logActivity(
     after: entry.after,
     createdAt: FieldValue.serverTimestamp(),
   });
+}
+
+/**
+ * The manager dashboard's Payment Summary card used to compute cashTotal /
+ * benefitTotal / totalPaidToday / totalPaidThisWeek by scanning every paid
+ * booking ever recorded, on every poll — an unbounded read that grows
+ * forever and was the direct cause of a Firestore quota exhaustion
+ * incident. Instead, `settings/paymentStats` keeps a running aggregate that
+ * every payment-affecting write updates by a small delta in the same
+ * transaction as the booking write itself, so the dashboard only ever needs
+ * to read that one document (see computePaymentSummary in
+ * paymentSummary.ts) instead of re-scanning history.
+ *
+ * Only an ACTIVE + paid booking contributes anything — a cancelled booking
+ * contributes 0 regardless of its `paid` field, mirroring the
+ * `where("status","==","active")` filter the original scan-based query
+ * used, so cancelling a previously-paid booking correctly removes its
+ * amount from the aggregate.
+ */
+interface PaymentContributionState {
+  status: string;
+  paid: boolean;
+  paymentMethod: PaymentMethod | null;
+  paidAmount: number | null;
+  amount: number;
+}
+
+/** Exported for unit testing — pure function, no I/O. */
+export function paymentContribution(state: PaymentContributionState | null): {
+  cash: number;
+  benefit: number;
+} {
+  if (!state || state.status !== "active" || !state.paid) return { cash: 0, benefit: 0 };
+  const collected = Number(state.paidAmount ?? state.amount) || 0;
+  if (state.paymentMethod === "cash") return { cash: collected, benefit: 0 };
+  if (state.paymentMethod === "benefit") return { cash: 0, benefit: collected };
+  return { cash: 0, benefit: 0 };
+}
+
+function paymentStatsRef(db: Firestore) {
+  return db.collection("settings").doc("paymentStats");
+}
+
+/**
+ * Firestore transactions require every read to happen before any write —
+ * callers must fetch this (via `tx.get(paymentStatsRef(db))`) before their
+ * own first write, then pass the result here.
+ */
+type PaymentStatsSnapshotData = { dailyPaid?: Record<string, number> } | undefined;
+
+/**
+ * `dayKey` identifies which calendar day's bucket (in `dailyPaid`, used to
+ * derive "paid today" / "paid this week") the delta belongs to — always the
+ * day the booking's `paymentDate` was stamped, never "today", so reverting
+ * a payment made days ago correctly reduces *that* day's total instead of
+ * today's. Pass null when there is no relevant payment date (nothing was
+ * ever paid on either side of the transition).
+ *
+ * `dailyPaid`'s per-day entry is a genuinely nested map field, and
+ * `FieldValue.increment()` on a dotted string key (`"dailyPaid.2026-07-22"`)
+ * does NOT address into it under `set(..., {merge:true})` — Firestore
+ * treats that as a literal top-level field name containing a dot, not a
+ * nested path, so a transactional read-modify-write of the whole map is
+ * used instead. cashTotal/benefitTotal aren't nested, so increment() on
+ * those top-level fields works as expected.
+ */
+function applyPaymentStatsDelta(
+  tx: Transaction,
+  db: Firestore,
+  currentStats: PaymentStatsSnapshotData,
+  before: PaymentContributionState | null,
+  after: PaymentContributionState,
+  dayKey: string | null
+) {
+  const b = paymentContribution(before);
+  const a = paymentContribution(after);
+  const cashDelta = a.cash - b.cash;
+  const benefitDelta = a.benefit - b.benefit;
+  const totalDelta = a.cash + a.benefit - (b.cash + b.benefit);
+  if (cashDelta === 0 && benefitDelta === 0 && totalDelta === 0) return;
+
+  const update: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
+  if (cashDelta !== 0) update.cashTotal = FieldValue.increment(cashDelta);
+  if (benefitDelta !== 0) update.benefitTotal = FieldValue.increment(benefitDelta);
+  if (totalDelta !== 0 && dayKey) {
+    const dailyPaid = { ...(currentStats?.dailyPaid ?? {}) };
+    dailyPaid[dayKey] = (dailyPaid[dayKey] ?? 0) + totalDelta;
+    update.dailyPaid = dailyPaid;
+  }
+
+  tx.set(paymentStatsRef(db), update, { merge: true });
+}
+
+/** Native Admin SDK Timestamps (not the app's serialized client shape) always have `.toDate()` at runtime here. */
+function dayKeyFromPaymentDate(paymentDate: unknown): string | null {
+  if (!paymentDate) return null;
+  const toDate = (paymentDate as { toDate?: () => Date }).toDate;
+  return typeof toDate === "function" ? dateInBahrain(toDate.call(paymentDate)) : null;
 }
 
 export interface CreateBookingInput {
@@ -351,6 +449,7 @@ export async function updateBookingServer(
     if (before.status !== "active") {
       throw new ServiceError("لا يمكن تعديل حجز ملغى", "INVALID_STATE", 400);
     }
+    const statsSnap = await tx.get(paymentStatsRef(db));
 
     const targetDate = patch.date ?? before.date;
     const targetShift = patch.shift ?? before.shift;
@@ -403,6 +502,19 @@ export async function updateBookingServer(
       });
     }
 
+    // Only matters for a legacy paid booking with no paidAmount recorded
+    // (collected amount then falls back to `amount`, so editing it changes
+    // the aggregate); a no-op for every normal already-paid booking since
+    // paidAmount is what actually gets summed.
+    applyPaymentStatsDelta(
+      tx,
+      db,
+      statsSnap.data() as { dailyPaid?: Record<string, number> } | undefined,
+      { status: before.status, paid: before.paid, paymentMethod: before.paymentMethod, paidAmount: before.paidAmount, amount: before.amount },
+      { status: before.status, paid: before.paid, paymentMethod: before.paymentMethod, paidAmount: before.paidAmount, amount: patch.amount },
+      dayKeyFromPaymentDate(before.paymentDate)
+    );
+
     logActivity(tx, db, {
       type: "booking_edited",
       entityType: "booking",
@@ -434,6 +546,7 @@ export async function cancelBookingServer(
     if (before.status !== "active") {
       throw new ServiceError("الحجز ملغى بالفعل", "INVALID_STATE", 400);
     }
+    const statsSnap = await tx.get(paymentStatsRef(db));
 
     const slotRef = db.collection("slots").doc(slotId(before.workerId, before.date, before.shift));
 
@@ -449,6 +562,18 @@ export async function cancelBookingServer(
 
     tx.update(bookingRef, after);
     tx.delete(slotRef);
+
+    // A cancelled booking never contributes to the payment aggregate, even
+    // if it was paid — matches the original `where("status","==","active")`
+    // scan, which stopped counting a booking the moment it was cancelled.
+    applyPaymentStatsDelta(
+      tx,
+      db,
+      statsSnap.data() as { dailyPaid?: Record<string, number> } | undefined,
+      { status: before.status, paid: before.paid, paymentMethod: before.paymentMethod, paidAmount: before.paidAmount, amount: before.amount },
+      { status: "cancelled", paid: before.paid, paymentMethod: before.paymentMethod, paidAmount: before.paidAmount, amount: before.amount },
+      dayKeyFromPaymentDate(before.paymentDate)
+    );
 
     logActivity(tx, db, {
       type: "booking_cancelled",
@@ -507,9 +632,12 @@ export async function updateBookingPaymentServer(
     if (before.status !== "active") {
       throw new ServiceError("لا يمكن تعديل حجز ملغى", "INVALID_STATE", 400);
     }
+    const statsSnap = await tx.get(paymentStatsRef(db));
 
     let after: Record<string, unknown>;
     const logs: { type: ActivityActionType }[] = [];
+    let afterContribution: PaymentContributionState;
+    let dayKey: string | null;
 
     if (!patch.isPaid) {
       after = {
@@ -519,6 +647,8 @@ export async function updateBookingPaymentServer(
         paymentDate: null,
         paymentBy: null,
       };
+      afterContribution = { status: before.status, paid: false, paymentMethod: null, paidAmount: null, amount: before.amount };
+      dayKey = dayKeyFromPaymentDate(before.paymentDate);
       if (before.paid) logs.push({ type: "payment_reverted" });
     } else if (!before.paid) {
       after = {
@@ -528,6 +658,14 @@ export async function updateBookingPaymentServer(
         paymentDate: FieldValue.serverTimestamp(),
         paymentBy: actor.uid,
       };
+      afterContribution = {
+        status: before.status,
+        paid: true,
+        paymentMethod: patch.paymentMethod,
+        paidAmount: patch.paidAmount,
+        amount: before.amount,
+      };
+      dayKey = todayBahrain();
       logs.push({ type: "payment_marked_paid" });
     } else {
       after = {
@@ -537,6 +675,14 @@ export async function updateBookingPaymentServer(
         paymentDate: before.paymentDate,
         paymentBy: actor.uid,
       };
+      afterContribution = {
+        status: before.status,
+        paid: true,
+        paymentMethod: patch.paymentMethod,
+        paidAmount: patch.paidAmount,
+        amount: before.amount,
+      };
+      dayKey = dayKeyFromPaymentDate(before.paymentDate);
       if (before.paymentMethod !== patch.paymentMethod) logs.push({ type: "payment_method_changed" });
       if (before.paidAmount !== patch.paidAmount) logs.push({ type: "payment_amount_changed" });
     }
@@ -546,6 +692,15 @@ export async function updateBookingPaymentServer(
     after.updatedBy = actor.uid;
     after.updatedAt = FieldValue.serverTimestamp();
     tx.update(bookingRef, after);
+
+    applyPaymentStatsDelta(
+      tx,
+      db,
+      statsSnap.data() as { dailyPaid?: Record<string, number> } | undefined,
+      { status: before.status, paid: before.paid, paymentMethod: before.paymentMethod, paidAmount: before.paidAmount, amount: before.amount },
+      afterContribution,
+      dayKey
+    );
 
     for (const log of logs) {
       logActivity(tx, db, {

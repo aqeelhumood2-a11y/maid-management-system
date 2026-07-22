@@ -164,7 +164,8 @@ export type ActivityActionType =
   | "area_added"
   | "area_edited"
   | "area_deactivated"
-  | "settings_updated";
+  | "settings_updated"
+  | "payment_stats_initialized";
 
 export interface ActivityLog {
   id: string;

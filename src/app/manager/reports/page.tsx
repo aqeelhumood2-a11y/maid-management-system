@@ -12,7 +12,19 @@ import type { Booking, PaymentMethod, Shift } from "@/lib/types";
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
 const PAYMENT_LABEL: Record<string, string> = { benefit: "بنفت", cash: "نقدي" };
 
-type RangeMode = "day" | "range" | "week" | "month" | "all";
+export type RangeMode = "day" | "range" | "week" | "month" | "all";
+
+// "All" spans the entire booking history (2000-01-01..2100-01-01) — that
+// must never be re-read on the usual 20s polling cadence, so it's fetched
+// once per selection instead of continuously. Passed as usePolledFetch's
+// interval override; setInterval's practical max delay (~24.8 days) is a
+// reasonable stand-in for "don't repoll during this session."
+const NO_REPOLL_INTERVAL_MS = 2_147_483_647;
+
+/** Exported for unit testing — pure function, no React involved. */
+export function pollIntervalForRangeMode(rangeMode: RangeMode): number | undefined {
+  return rangeMode === "all" ? NO_REPOLL_INTERVAL_MS : undefined;
+}
 
 export default function ReportsPage() {
   const { workers } = useWorkers();
@@ -46,10 +58,12 @@ export default function ReportsPage() {
   const { data, loading } = usePolledFetch(
     async () => {
       const res = await fetch(`/api/bookings?start=${start}&end=${end}`);
+      if (!res.ok) throw new Error("تعذر تحميل الحجوزات");
       const json = (await res.json()) as { bookings?: Booking[] };
       return json.bookings ?? [];
     },
-    [start, end]
+    [start, end],
+    pollIntervalForRangeMode(rangeMode)
   );
 
   const areaOptions = useMemo(() => {

@@ -3,11 +3,12 @@
 import { usePolledFetch } from "@/hooks/usePolledFetch";
 import type { PaymentSummary } from "@/lib/server/paymentSummary";
 
-async function fetchSummary(): Promise<PaymentSummary | null> {
+async function fetchSummary(): Promise<PaymentSummary> {
   const res = await fetch("/api/dashboard/payment-summary");
-  if (!res.ok) return null;
+  if (!res.ok) throw new Error("تعذر تحميل ملخص المدفوعات");
   const json = (await res.json()) as { summary?: PaymentSummary };
-  return json.summary ?? null;
+  if (!json.summary) throw new Error("تعذر تحميل ملخص المدفوعات");
+  return json.summary;
 }
 
 const ROWS: { key: keyof PaymentSummary; label: string }[] = [

@@ -4,7 +4,8 @@ import type { Shift } from "./types";
 /** Thin client-side wrapper around the Daily Route ordering API route. */
 export async function getRouteOrder(date: string, shift: Shift): Promise<string[]> {
   const res = await fetch(`/api/routes/order?date=${date}&shift=${shift}`);
-  const json = (await res.json().catch(() => ({}))) as { workerIds?: string[] };
+  if (!res.ok) throw new Error("تعذر تحميل ترتيب خط السير");
+  const json = (await res.json()) as { workerIds?: string[] };
   return json.workerIds ?? [];
 }
 
