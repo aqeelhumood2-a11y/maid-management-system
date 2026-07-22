@@ -10,6 +10,7 @@ const ITEMS = [
   { href: "/manager/routes", label: "خطوط السير" },
   { href: "/manager/reports", label: "التقارير" },
   { href: "/manager/unpaid", label: "المدفوعات" },
+  { href: "/manager/financial", label: "التسوية المالية" },
   { href: "/manager/activity", label: "سجل النشاط" },
   { href: "/manager/settings", label: "الإعدادات" },
 ];

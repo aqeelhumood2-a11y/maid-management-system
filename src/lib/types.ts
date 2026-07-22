@@ -127,6 +127,7 @@ export type ActivityActionType =
   | "payment_reverted"
   | "payment_method_changed"
   | "payment_amount_changed"
+  | "settlement_calculated"
   | "worker_added"
   | "worker_edited"
   | "worker_activated"

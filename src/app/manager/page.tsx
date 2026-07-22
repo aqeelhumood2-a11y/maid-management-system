@@ -8,6 +8,7 @@ const SECTIONS = [
   { href: "/manager/routes", label: "خطوط السير", desc: "حجوزات يوم محدد حسب المنطقة", icon: "🗺️" },
   { href: "/manager/reports", label: "التقارير", desc: "تحليل الحجوزات والإيرادات", icon: "📊" },
   { href: "/manager/unpaid", label: "المدفوعات", desc: "متابعة حالة الدفع لكل حجز", icon: "💳" },
+  { href: "/manager/financial", label: "التسوية المالية", desc: "أرباح العاملات وصافي الربح", icon: "💰" },
   { href: "/manager/activity", label: "سجل النشاط", desc: "سجل العمليات في النظام", icon: "🕒" },
   { href: "/manager/settings", label: "الإعدادات", desc: "بيانات النظام والمناطق والمستخدمين", icon: "⚙️" },
 ];

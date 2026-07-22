@@ -16,8 +16,9 @@ enter. Anyone who opens the site sees the live schedule immediately:
 - A small, unobtrusive **⚙︎** button in the header opens a manager password
   prompt. The correct password opens the **Manager** section: Future
   Booking, Worker Management, Recurring Weekly Schedule, Routes, Reports,
-  Payments, Activity History and Settings. A wrong password just
-  shows an inline error — the visitor stays on the Employee screen.
+  Payments, Financial Settlement, Activity History and Settings. A wrong
+  password just shows an inline error — the visitor stays on the Employee
+  screen.
 
 There is no Firebase Authentication anywhere in this app, and no concept of
 individual employee or manager accounts. "Employee" access is simply
@@ -39,6 +40,8 @@ any future date without pre-generating documents.
   bundle. The browser talks only to this app's own Next.js API routes.
 - Vitest for unit tests, `@firebase/rules-unit-testing` + Firebase Emulator
   Suite for security-rules/integration tests
+- `exceljs` (server-side) for Financial Settlement Excel export; `jspdf` +
+  `html2canvas` (client-side, dynamically imported) for its PDF export
 - Deployed on Vercel
 
 ## Local setup
@@ -204,9 +207,11 @@ npm start
   full `/manager` section: Future Booking (manual date selection + Friday
   override), Worker Management, Recurring Weekly Schedule, Routes, Reports,
   Payments (mark/edit/revert paid status, filter by All/Paid/Unpaid/Cash/
-  BenefitPay), Activity History, Settings (business name, areas). Payment
-  data — on the schedule grid, in Reports, and via the Payments page — is
-  visible to a manager session only; see **Manager Payment Tracking**.
+  BenefitPay), Financial Settlement (worker payouts, Manager Net, PDF/Excel
+  export), Activity History, Settings (business name, areas). Payment and
+  financial data — on the schedule grid, in Reports, and via the Payments
+  and Financial Settlement pages — is visible to a manager session only;
+  see **Manager Payment Tracking** and **Manager Financial Settlement**.
 
 Since there are no individual accounts anymore, every action's audit trail
 (`activityLogs`, and `createdBy`/`updatedBy`/`cancelledBy` fields) is
@@ -310,6 +315,73 @@ whenever and however they choose.
   (paid/unpaid) in `ScheduleTable`, rendered only when `isManager` is true —
   the underlying data is already redacted for employees regardless, so this
   is a UX-only gate on top of the real security boundary above.
+
+## Manager Financial Settlement
+
+`/manager/financial` computes what each worker has earned and what the
+office actually kept, purely by reading existing `bookings` documents — it
+adds no new collection, no new booking field, and never writes back to a
+booking. All of the logic lives in `src/lib/server/financialSummary.ts`.
+
+- **"Completed" is a read-time interpretation, not a stored status.**
+  Bookings only ever have `status: "active" | "cancelled"` (unchanged by
+  this feature). A booking counts as completed here if it's `active` and its
+  `date` is on or before today in Asia/Bahrain — see `isCompleted()`. This is
+  deliberate: adding a real "completed" status would have meant migrating
+  every existing booking and touching the booking-creation/edit path, which
+  requirement #10 explicitly rules out. Because it's computed at read time,
+  every booking that already exists — including ones created before this
+  feature shipped — is included automatically (requirement #8), with no
+  backfill.
+- **Worker payout formula** (`computeDailyPayout`, unit-tested in
+  `tests/unit/financialSummary.test.ts`), applied per worker per calendar
+  day, counting only that worker's **completed AND paid** bookings that day:
+  0 → 0 BHD, 1 → 3 BHD, 2 → 7 BHD (not 3+3), and every booking after the
+  second → +3 BHD flat (3 → 10, 4 → 13, 5 → 16, ...). A day's payout can
+  only be computed once all of that day's relevant bookings are known, so
+  earnings are always summed per-day first, then rolled up into weekly/
+  monthly totals — never averaged or estimated.
+- **Worker Summary** (`getFinancialSummaryServer` → `GET
+  /api/financial-summary?start=&end=`), per worker: total completed
+  bookings (regardless of payment — useful for spotting outstanding dues),
+  total paid bookings, total earnings, and the same numbers broken down
+  daily / weekly (Bahrain Sat–Fri work-week, matching `weekStart()`
+  elsewhere) / monthly, toggled in the UI without re-fetching since all
+  three are derived from the same daily breakdown in one response.
+- **Workers Total / Overall Total / Manager Net**: Workers Total is the sum
+  of every worker's earnings; Overall Total is the sum actually collected
+  from customers (`paidAmount ?? amount`, same legacy fallback as the
+  Payment Tracking module) for completed+paid bookings in range; Manager Net
+  = Overall Total − Workers Total. All three use the same completed+paid
+  bookings, so Manager Net is a real "what the office kept" figure, not a
+  mix of realized worker cost against unrelated future-dated revenue.
+- **Filters**: Today / This Week / This Month / a custom date range —
+  mirrors the same range-mode pattern as the Reports page.
+- **Exports**: "تصدير Excel" hits `GET /api/financial-summary/export`,
+  which recomputes the summary server-side with `getFinancialSummaryServer`
+  (guaranteeing the export always matches what a manager could see on
+  screen) and streams a real `.xlsx` workbook via `exceljs` — Arabic text
+  needs no special handling since Excel/OOXML store plain UTF-8 strings.
+  "تصدير PDF" instead screenshots the rendered report with `html2canvas`
+  and paginates it into a PDF via `jspdf`
+  (`src/lib/export/exportToPdf.ts`), entirely client-side: `jsPDF`'s own
+  text layer has no Arabic shaping support, so rendering through the
+  browser's own text engine and capturing the result as an image is what
+  keeps worker/area names readable instead of turning into disconnected or
+  reversed glyphs.
+- **Security**: manager-only, the same way every other `/manager/*` page and
+  API route is — `isManagerSession()` in the API routes,
+  `src/app/manager/layout.tsx`'s server-side redirect for the page itself,
+  and `requireManager()` inside `getFinancialSummaryServer` as a third,
+  independent check in the trusted server layer.
+- **Activity Log**: every settlement calculation — whether triggered by
+  loading the page with a given filter or by an export, since exports
+  recompute the same way — writes a `settlement_calculated` entry to
+  `activityLogs` with the range and resulting totals (requirement #9).
+  There's no persisted "payout" record to diff a before/after against (it's
+  fully derived), so this logs the calculation event itself rather than a
+  data mutation, same spirit as the rest of this app's append-only audit
+  trail.
 
 ## Database design (Firestore collections)
 
@@ -420,20 +492,25 @@ tap-to-call), Reports (worker/area/date/date-range/week/month/paid/payment
 method/shift filters with totals and a reset button), Payments (mark
 paid/edit/revert with method + amount + audit trail, filter by All/Paid/
 Unpaid/Cash/BenefitPay), Dashboard Payment Summary (unpaid/paid-today/
-paid-this-week/cash/benefit/grand totals), Activity History (filterable,
-immutable, including payment-specific action types), Settings (business
-name, area CRUD).
+paid-this-week/cash/benefit/grand totals), Financial Settlement (per-worker
+completed/paid/earnings with daily/weekly/monthly breakdowns, Workers
+Total, Overall Total, Manager Net, Today/Week/Month/custom-range filters,
+PDF and Excel export), Activity History (filterable, immutable, including
+payment- and settlement-specific action types), Settings (business name,
+area CRUD).
 
 ## Tests and exact results
 
 ```
-npm run test           → 6 files, 42 tests passed  (date / availability / recurring pure
-                          logic, managerAuth password/session-token, scheduleCellLabel, and
-                          payment-redaction security unit tests)
-npm run test:emulator  → 3 files, 72 tests passed  (Firestore deny-all rules for every
-                          collection, server booking/recurring/payment transaction tests, and
-                          server catalog (areas/workers/settings) tests — run against the
-                          Firebase Emulator Suite via `firebase emulators:exec`)
+npm run test           → 7 files, 56 tests passed  (date / availability / recurring pure
+                          logic, managerAuth password/session-token, scheduleCellLabel,
+                          payment-redaction security, and financial-settlement payout-formula
+                          unit tests)
+npm run test:emulator  → 4 files, 78 tests passed  (Firestore deny-all rules for every
+                          collection, server booking/recurring/payment/financial-settlement
+                          transaction tests, and server catalog (areas/workers/settings)
+                          tests — run against the Firebase Emulator Suite via
+                          `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
 npm run build           → succeeds (Turbopack production build)
@@ -459,6 +536,16 @@ schedules (paying one date never touches another), and — as a unit-level
 security regression guard — that `redactPaymentFields` strips every payment
 field from a booking before it can reach a non-manager session.
 
+Financial Settlement coverage: the payout formula for 0–6 completed+paid
+bookings in a single day (`computeDailyPayout`), correct per-worker/per-day
+aggregation and independence between workers, excluding unpaid bookings from
+earnings while still counting them as completed, excluding cancelled and
+future-dated bookings entirely, the `paidAmount ?? amount` legacy fallback
+for bookings paid before this feature existed, `workersTotal`/`overallTotal`/
+`managerNet` arithmetic, daily→weekly→monthly aggregation consistency,
+manager-only rejection of `getFinancialSummaryServer`, and the
+`settlement_calculated` activity-log entry written for every calculation.
+
 ## Known limitations
 
 - Real-time updates are now polling-based (~4s interval) rather than an
@@ -474,3 +561,13 @@ field from a booking before it can reach a non-manager session.
   keeps the index list short and is appropriate at this system's scale (a
   single staffing office); a very large multi-year, no-date-filter export could
   read more documents than a fully server-filtered query would.
+- "Completed" for Financial Settlement purposes is `date <= today`, with no
+  finer-grained notion of a shift actually being marked done — a same-day
+  morning booking is treated as completed as soon as the calendar date
+  arrives, not when the shift itself ends. See **Manager Financial
+  Settlement** for why this was the chosen interpretation.
+- The PDF export is a rasterized screenshot of the rendered report
+  (`html2canvas` + `jspdf`), not vector text — chosen deliberately so Arabic
+  worker/area names render correctly (see **Manager Financial Settlement**),
+  at the cost of a larger file size and non-selectable text. The Excel
+  export has neither limitation.

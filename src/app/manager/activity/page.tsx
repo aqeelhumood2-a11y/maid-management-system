@@ -16,6 +16,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   payment_reverted: "التراجع عن الدفع",
   payment_method_changed: "تغيير طريقة الدفع",
   payment_amount_changed: "تغيير المبلغ المدفوع",
+  settlement_calculated: "حساب التسوية المالية",
   worker_added: "إضافة عاملة",
   worker_edited: "تعديل بيانات عاملة",
   worker_activated: "تفعيل عاملة",

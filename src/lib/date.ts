@@ -76,6 +76,16 @@ export function formatDateAr(dateStr: string): string {
   }).format(d);
 }
 
+/** month is a "yyyy-MM" string (e.g. from `date.slice(0, 7)`). */
+export function formatMonthAr(month: string): string {
+  const d = parseDateOnly(`${month}-01`);
+  return new Intl.DateTimeFormat("ar-BH", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(d);
+}
+
 export function formatDateShortAr(dateStr: string): string {
   const d = parseDateOnly(dateStr);
   return new Intl.DateTimeFormat("ar-BH", {
