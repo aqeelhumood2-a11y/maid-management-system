@@ -4,11 +4,17 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/Field";
 import { Badge, ErrorBanner, Spinner, SuccessBanner } from "@/components/ui/Feedback";
+import { Modal } from "@/components/ui/Modal";
 import { useAreas } from "@/hooks/useAreas";
 import { useSettings } from "@/hooks/useSettings";
 import { createArea, setAreaActive, updateArea } from "@/lib/areas";
 import { ApiError } from "@/lib/booking";
-import { changeManagerPassword, updateSettings } from "@/lib/settings";
+import {
+  changeManagerPassword,
+  initializePaymentStats,
+  updateSettings,
+  type PaymentStatsInitResult,
+} from "@/lib/settings";
 import type { Area } from "@/lib/types";
 
 type Tab = "general" | "areas" | "password";
@@ -143,15 +149,130 @@ function GeneralTab() {
   if (loading) return <Spinner />;
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-md space-y-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-      <ErrorBanner message={error} />
-      <SuccessBanner message={success} />
-      <TextInput label="اسم النظام" required value={businessName} onChange={(e) => setBusinessName(e.target.value)} />
-      <TextInput label="المنطقة الزمنية" value="Asia/Bahrain" disabled />
-      <Button type="submit" loading={saving}>
-        حفظ
-      </Button>
-    </form>
+    <div className="max-w-md space-y-4">
+      <form onSubmit={handleSubmit} className="space-y-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+        <ErrorBanner message={error} />
+        <SuccessBanner message={success} />
+        <TextInput label="اسم النظام" required value={businessName} onChange={(e) => setBusinessName(e.target.value)} />
+        <TextInput label="المنطقة الزمنية" value="Asia/Bahrain" disabled />
+        <Button type="submit" loading={saving}>
+          حفظ
+        </Button>
+      </form>
+
+      <PaymentStatsInitSection />
+    </div>
+  );
+}
+
+/**
+ * Temporary, manager-only, one-time control: seeds settings/paymentStats
+ * from existing historical bookings (see initializePaymentStatsServer).
+ * Added specifically so this can be triggered from a phone with no
+ * DevTools access — previously this required an authenticated fetch() call
+ * from a browser console. Once a result (success OR "already initialized")
+ * comes back, the button is permanently replaced by that result for the
+ * rest of this page view; the server itself is the actual source of truth
+ * for "has this run" (a repeat call is safely rejected either way), this is
+ * just UI-level protection against an accidental double-tap.
+ */
+function PaymentStatsInitSection() {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<PaymentStatsInitResult | null>(null);
+  const [alreadyInitialized, setAlreadyInitialized] = useState(false);
+
+  async function handleConfirm() {
+    setRunning(true);
+    setError("");
+    try {
+      const res = await initializePaymentStats();
+      setResult(res);
+      setConfirmOpen(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "ALREADY_INITIALIZED") {
+        setAlreadyInitialized(true);
+        setConfirmOpen(false);
+      } else {
+        setError(err instanceof ApiError ? err.message : "تعذر تنفيذ العملية");
+      }
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const done = result !== null || alreadyInitialized;
+
+  return (
+    <div className="space-y-3 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+      <div>
+        <h2 className="font-semibold text-slate-900">تهيئة إحصائيات الدفع</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          إجراء لمرة واحدة فقط: يحسب إجمالي المدفوعات (نقدي وبنفت) من الحجوزات الحالية ويهيّئ ملخص المدفوعات في
+          لوحة المدير. لا يعدّل أو يحذف أي حجز.
+        </p>
+      </div>
+
+      {result && (
+        <div className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">
+          <p className="font-medium">تمت التهيئة بنجاح</p>
+          <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
+            <div>
+              <dt className="text-emerald-600">النقدي</dt>
+              <dd className="font-semibold">{result.cashTotal.toFixed(3)} د.ب</dd>
+            </div>
+            <div>
+              <dt className="text-emerald-600">بنفت</dt>
+              <dd className="font-semibold">{result.benefitTotal.toFixed(3)} د.ب</dd>
+            </div>
+            <div>
+              <dt className="text-emerald-600">عدد الحجوزات المفحوصة</dt>
+              <dd className="font-semibold">{result.bookingsScanned}</dd>
+            </div>
+          </dl>
+        </div>
+      )}
+
+      {alreadyInitialized && (
+        <div className="rounded-xl bg-sky-50 p-3 text-sm text-sky-800">
+          ALREADY_INITIALIZED — تمت تهيئة إحصائيات المدفوعات مسبقاً، ولم يتم تغيير أي شيء.
+        </div>
+      )}
+
+      {!done && (
+        <>
+          <ErrorBanner message={error} />
+          <Button variant="secondary" onClick={() => setConfirmOpen(true)}>
+            تهيئة إحصائيات الدفع
+          </Button>
+        </>
+      )}
+
+      {confirmOpen && (
+        <Modal open onClose={() => (running ? undefined : setConfirmOpen(false))} title="تأكيد التهيئة">
+          <div className="space-y-4">
+            <ErrorBanner message={error} />
+            <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+              <p className="font-medium">هذا إجراء لمرة واحدة ولا يمكن التراجع عنه.</p>
+              <p className="mt-1">
+                سيتم فحص جميع الحجوزات المدفوعة الحالية لحساب إجمالي النقدي وبنفت. لن يتم تعديل أو حذف أي حجز.
+                إذا سبقت تهيئة الإحصائيات من قبل، سيتم رفض الطلب دون أي تغيير.
+              </p>
+            </div>
+            <p className="text-sm text-slate-700">هل تريد بالتأكيد المتابعة؟</p>
+            <div className="flex gap-3">
+              <Button variant="secondary" fullWidth onClick={() => setConfirmOpen(false)} disabled={running}>
+                إلغاء
+              </Button>
+              <Button variant="danger" fullWidth loading={running} onClick={handleConfirm}>
+                نعم، تابع
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }
 

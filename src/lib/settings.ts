@@ -25,3 +25,34 @@ export async function changeManagerPassword(currentPassword: string, newPassword
     throw new ApiError(data.error || "حدث خطأ غير متوقع", data.code || "UNKNOWN");
   }
 }
+
+export interface PaymentStatsInitResult {
+  cashTotal: number;
+  benefitTotal: number;
+  bookingsScanned: number;
+}
+
+/**
+ * Manager only, and meant to run exactly once, ever — see
+ * initializePaymentStatsServer in src/lib/server/paymentSummary.ts. A
+ * repeat call throws an ApiError with code "ALREADY_INITIALIZED" rather
+ * than re-summing and doubling the totals.
+ */
+export async function initializePaymentStats(): Promise<PaymentStatsInitResult> {
+  const res = await fetch("/api/manager/payment-stats/initialize", { method: "POST" });
+  const data = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    code?: string;
+    cashTotal?: number;
+    benefitTotal?: number;
+    bookingsScanned?: number;
+  };
+  if (!res.ok) {
+    throw new ApiError(data.error || "حدث خطأ غير متوقع", data.code || "UNKNOWN");
+  }
+  return {
+    cashTotal: data.cashTotal ?? 0,
+    benefitTotal: data.benefitTotal ?? 0,
+    bookingsScanned: data.bookingsScanned ?? 0,
+  };
+}
