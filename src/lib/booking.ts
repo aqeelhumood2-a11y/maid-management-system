@@ -52,6 +52,7 @@ export interface CreateBookingInput {
   areaName: string;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -74,6 +75,7 @@ export interface EditableBookingFields {
   areaName: string;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   date?: string;

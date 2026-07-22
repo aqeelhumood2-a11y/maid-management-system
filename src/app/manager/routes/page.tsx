@@ -2,64 +2,76 @@
 
 import { useMemo, useState } from "react";
 import { BookingDetailsModal } from "@/components/schedule/BookingDetailsModal";
+import { QuickBookingModal } from "@/components/schedule/QuickBookingModal";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextInput } from "@/components/ui/Field";
-import { EmptyState, Spinner } from "@/components/ui/Feedback";
+import { EmptyState, Spinner, ErrorBanner } from "@/components/ui/Feedback";
+import { Modal } from "@/components/ui/Modal";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
+import { useRouteOrder } from "@/hooks/useRouteOrder";
 import { resolveCell } from "@/lib/availability";
+import { ApiError } from "@/lib/booking";
 import { formatDateAr, todayBahrain, weekdayLabelAr } from "@/lib/date";
+import { mapsLinkFor } from "@/lib/maps";
+import { applyRouteOrder, saveRouteOrder } from "@/lib/routeOrder";
 import type { CellResolution, Shift, Worker } from "@/lib/types";
 
-const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
-
-/** Opens the location in Google Maps — customerLocation is a free-typed description, not a URL. */
-function mapsLinkFor(location: string): string {
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
-}
+const SHIFT_TABS: { value: Shift; label: string }[] = [
+  { value: "morning", label: "الجولة الصباحية" },
+  { value: "afternoon", label: "الجولة المسائية" },
+];
 
 interface RouteRow {
   worker: Worker;
   resolution: CellResolution;
   areaName: string;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
+  isRecurring: boolean;
 }
 
 /**
  * The Daily Route — morning and evening are two entirely independent
- * routes, selected here by the Shift dropdown. Everything on screen
- * (bookings, edit action) is scoped to `date` + `shift`; switching shift
- * re-resolves the grid from scratch against that shift alone, so editing
- * a morning booking can never touch the evening route for the same day,
- * and vice versa.
+ * routes, selected here by tabs (not a shared dropdown). Everything on
+ * screen (bookings, order, create/edit/delete) is scoped to `date` +
+ * `shift`; switching shift re-resolves the route from scratch, so editing
+ * or reordering the morning route can never touch the evening route for
+ * the same day, and vice versa.
  */
 export default function RoutesPage() {
   const today = todayBahrain();
   const [date, setDate] = useState(today);
   const [shift, setShift] = useState<Shift>("morning");
   const [editing, setEditing] = useState<RouteRow | null>(null);
+  const [deleting, setDeleting] = useState<RouteRow | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const { workers, loading: workersLoading } = useWorkers();
   const { bookings, loading: bookingsLoading } = useBookingsForDates(date ? [date] : []);
   const { schedules } = useRecurringSchedules();
   const { exceptions } = useRecurringExceptions();
+  const { workerIds: savedOrder } = useRouteOrder(date, shift);
 
-  const rows = useMemo<RouteRow[]>(() => {
+  const baseRows = useMemo<RouteRow[]>(() => {
     return workers
       .filter((w) => w.active)
       .map((worker): RouteRow | null => {
         const resolution = resolveCell(worker, date, shift, bookings, schedules, exceptions);
         if (resolution.status !== "booked") return null;
+        const isRecurring = resolution.virtualOccurrence !== null || resolution.booking?.recurringSeriesId != null;
         if (resolution.booking) {
           const b = resolution.booking;
           return {
             worker,
             resolution,
             areaName: b.areaName,
+            customerName: b.customerName,
             customerPhone: b.customerPhone,
             customerLocation: b.customerLocation,
+            isRecurring,
           };
         }
         const r = resolution.virtualOccurrence!.recurring;
@@ -67,32 +79,105 @@ export default function RoutesPage() {
           worker,
           resolution,
           areaName: r.areaName,
+          customerName: r.customerName,
           customerPhone: r.customerPhone,
           customerLocation: r.customerLocation,
+          isRecurring,
         };
       })
       .filter((r): r is RouteRow => r !== null);
   }, [workers, date, shift, bookings, schedules, exceptions]);
 
+  const orderedRows = useMemo(
+    () => applyRouteOrder(baseRows, savedOrder, (r) => r.worker.id),
+    [baseRows, savedOrder]
+  );
+
+  const [manualRows, setManualRows] = useState<RouteRow[] | null>(null);
+  const [orderError, setOrderError] = useState("");
+  const [orderSaving, setOrderSaving] = useState(false);
+
+  // Reset any staged (unsaved) manual order the moment date or shift changes,
+  // so a reorder started on one route can never leak into another.
+  const routeKey = `${date}_${shift}`;
+  const [lastRouteKey, setLastRouteKey] = useState(routeKey);
+  if (routeKey !== lastRouteKey) {
+    setLastRouteKey(routeKey);
+    setManualRows(null);
+    setOrderError("");
+  }
+
+  const rows = manualRows ?? orderedRows;
+
+  function moveRow(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    const base = manualRows ?? orderedRows;
+    if (target < 0 || target >= base.length) return;
+    const next = base.slice();
+    [next[index], next[target]] = [next[target], next[index]];
+    setManualRows(next);
+  }
+
+  async function handleSaveOrder() {
+    if (!manualRows) return;
+    setOrderSaving(true);
+    setOrderError("");
+    try {
+      await saveRouteOrder(date, shift, manualRows.map((r) => r.worker.id));
+      setManualRows(null);
+    } catch (err) {
+      setOrderError(err instanceof ApiError ? err.message : "تعذر حفظ الترتيب");
+    } finally {
+      setOrderSaving(false);
+    }
+  }
+
+  const bookedWorkerIds = useMemo(() => new Set(baseRows.map((r) => r.worker.id)), [baseRows]);
+  const eligibleWorkers = useMemo(() => {
+    if (!date) return [];
+    return workers
+      .filter((w) => w.active && !bookedWorkerIds.has(w.id))
+      .map((w) => ({ worker: w, resolution: resolveCell(w, date, shift, bookings, schedules, exceptions) }))
+      .filter(({ resolution }) => resolution.status === "available" || resolution.status === "friday_holiday");
+  }, [workers, date, shift, bookings, schedules, exceptions, bookedWorkerIds]);
+
   const loading = workersLoading || bookingsLoading;
 
   return (
     <div className="flex flex-1 flex-col gap-4">
-      <h1 className="text-xl font-bold text-slate-900">خطوط السير</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-bold text-slate-900">خطوط السير اليومية</h1>
+        <Button size="sm" onClick={() => setCreating(true)}>
+          + إضافة
+        </Button>
+      </div>
 
-      <div className="grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div className="flex gap-2 rounded-2xl bg-white p-1.5 shadow-sm ring-1 ring-slate-200">
+        {SHIFT_TABS.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            onClick={() => setShift(tab.value)}
+            className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-medium transition-colors ${
+              shift === tab.value ? "bg-emerald-600 text-white" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <TextInput label="التاريخ" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-        <SelectInput label="الفترة" value={shift} onChange={(e) => setShift(e.target.value as Shift)}>
-          <option value="morning">صباحي</option>
-          <option value="afternoon">مسائي</option>
-        </SelectInput>
       </div>
 
       {date && (
         <p className="text-sm text-slate-500">
-          {weekdayLabelAr(date)} {formatDateAr(date)} · {SHIFT_LABEL[shift]}
+          {weekdayLabelAr(date)} {formatDateAr(date)}
         </p>
       )}
+
+      <ErrorBanner message={orderError} />
 
       {loading ? (
         <Spinner />
@@ -101,21 +186,44 @@ export default function RoutesPage() {
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
           <ul className="divide-y divide-slate-100">
-            {rows.map((r) => (
+            {rows.map((r, index) => (
               <li key={r.worker.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <div>
-                  <p className="font-medium text-slate-900">{r.worker.name}</p>
-                  <p className="text-sm text-slate-500">{r.areaName}</p>
-                  {r.customerLocation && (
-                    <a
-                      href={mapsLinkFor(r.customerLocation)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-sky-600 underline hover:text-sky-800"
+                <div className="flex items-start gap-2">
+                  <div className="flex flex-col gap-1 pt-0.5">
+                    <button
+                      type="button"
+                      disabled={index === 0}
+                      onClick={() => moveRow(index, -1)}
+                      aria-label="نقل للأعلى"
+                      className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
                     >
-                      {r.customerLocation}
-                    </a>
-                  )}
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      disabled={index === rows.length - 1}
+                      onClick={() => moveRow(index, 1)}
+                      aria-label="نقل للأسفل"
+                      className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
+                    >
+                      ▼
+                    </button>
+                  </div>
+                  <div>
+                    <p className="font-medium text-slate-900">{r.worker.name}</p>
+                    <p className="text-sm text-slate-500">{r.areaName}</p>
+                    {r.customerName && <p className="text-sm text-slate-700">{r.customerName}</p>}
+                    {r.customerLocation && (
+                      <a
+                        href={mapsLinkFor(r.customerLocation)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-sky-600 underline hover:text-sky-800"
+                      >
+                        {r.customerLocation}
+                      </a>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {r.customerPhone && (
@@ -130,10 +238,24 @@ export default function RoutesPage() {
                   <Button size="sm" variant="secondary" onClick={() => setEditing(r)}>
                     تعديل
                   </Button>
+                  <Button size="sm" variant="danger" onClick={() => setDeleting(r)}>
+                    حذف
+                  </Button>
                 </div>
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {manualRows && (
+        <div className="flex items-center gap-3">
+          <Button onClick={handleSaveOrder} loading={orderSaving}>
+            حفظ الترتيب
+          </Button>
+          <Button variant="secondary" onClick={() => setManualRows(null)} disabled={orderSaving}>
+            تراجع
+          </Button>
         </div>
       )}
 
@@ -150,6 +272,76 @@ export default function RoutesPage() {
           onSuccess={() => {}}
         />
       )}
+
+      {deleting && (
+        <BookingDetailsModal
+          open
+          onClose={() => setDeleting(null)}
+          worker={deleting.worker}
+          workers={workers}
+          date={date}
+          shift={shift}
+          resolution={deleting.resolution}
+          recurringSchedules={schedules}
+          initialView={deleting.isRecurring ? "cancelRecurringScope" : "cancelSingle"}
+          onSuccess={() => {}}
+        />
+      )}
+
+      {creating && (
+        <CreateRouteEntryModal
+          date={date}
+          shift={shift}
+          eligibleWorkers={eligibleWorkers.map((x) => x.worker)}
+          onClose={() => setCreating(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function CreateRouteEntryModal({
+  date,
+  shift,
+  eligibleWorkers,
+  onClose,
+}: {
+  date: string;
+  shift: Shift;
+  eligibleWorkers: Worker[];
+  onClose: () => void;
+}) {
+  const [workerId, setWorkerId] = useState("");
+  const worker = eligibleWorkers.find((w) => w.id === workerId) ?? null;
+
+  if (worker) {
+    return (
+      <QuickBookingModal
+        open
+        onClose={onClose}
+        worker={worker}
+        date={date}
+        shift={shift}
+        source="manager_future"
+        onSuccess={onClose}
+      />
+    );
+  }
+
+  return (
+    <Modal open onClose={onClose} title="إضافة إلى خط السير">
+      <div className="space-y-4">
+        <SelectInput label="العاملة" value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+          <option value="">
+            {eligibleWorkers.length === 0 ? "لا توجد عاملات متاحة لهذا الموعد" : "اختر العاملة"}
+          </option>
+          {eligibleWorkers.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name}
+            </option>
+          ))}
+        </SelectInput>
+      </div>
+    </Modal>
   );
 }

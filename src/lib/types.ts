@@ -57,6 +57,7 @@ export interface Booking {
   paymentBy: string | null;
   dropOffAt: Timestamp | null;
   pickupAt: Timestamp | null;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -84,6 +85,7 @@ export interface RecurringSchedule {
   dayOfWeek: number; // 0=Sunday ... 6=Saturday, 5(Friday) not allowed
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   startDate: string; // yyyy-MM-dd, inclusive
@@ -111,6 +113,22 @@ export interface RecurringException {
   createdAt: Timestamp | null;
 }
 
+/**
+ * The manually-arranged display order of the Daily Route for one specific
+ * date + shift — Morning and Evening are always separate documents (the id
+ * embeds the shift), so reordering one can never touch the other. Ordering
+ * is keyed by workerId, not by booking id, so it survives a not-yet-
+ * materialized recurring occurrence becoming a concrete booking later.
+ */
+export interface RouteOrder {
+  id: string; // `${date}_${shift}`
+  date: string;
+  shift: Shift;
+  workerIds: string[];
+  updatedAt: Timestamp | null;
+  updatedBy: string;
+}
+
 export interface BookingSlot {
   id: string; // `${workerId}_${date}_${shift}`
   bookingId: string;
@@ -134,6 +152,7 @@ export type ActivityActionType =
   | "route_picked_up"
   | "route_dropoff_reset"
   | "route_pickup_reset"
+  | "route_order_updated"
   | "worker_added"
   | "worker_edited"
   | "worker_activated"

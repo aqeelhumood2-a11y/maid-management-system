@@ -15,6 +15,7 @@ import {
   type PaymentPatch,
 } from "@/lib/booking";
 import { formatDateAr, formatTimestampAr, weekdayLabelAr } from "@/lib/date";
+import { mapsLinkFor } from "@/lib/maps";
 import {
   cancelRecurringOccurrence,
   editRecurringOccurrence,
@@ -51,6 +52,7 @@ export function BookingDetailsModal({
   shift,
   resolution,
   recurringSchedules,
+  initialView = "details",
   onSuccess,
 }: {
   open: boolean;
@@ -62,10 +64,12 @@ export function BookingDetailsModal({
   shift: Shift;
   resolution: CellResolution;
   recurringSchedules: RecurringSchedule[];
+  /** Opens straight into a specific view (e.g. a direct "Delete" entry point) instead of the details screen. */
+  initialView?: View;
   onSuccess: () => void;
 }) {
   const { isManager } = useManagerSession();
-  const [view, setView] = useState<View>("details");
+  const [view, setView] = useState<View>(initialView);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -79,6 +83,7 @@ export function BookingDetailsModal({
     areaName: recurring!.areaName,
     hours: recurring!.hours,
     amount: recurring!.amount,
+    customerName: recurring!.customerName,
     customerPhone: recurring!.customerPhone,
     customerLocation: recurring!.customerLocation,
   };
@@ -108,6 +113,9 @@ export function BookingDetailsModal({
             {weekdayLabelAr(date)} {formatDateAr(date)} · {SHIFT_LABEL[shift]}
           </div>
           <dl className="grid grid-cols-2 gap-3 text-sm">
+            {displayFields.customerName && (
+              <Field label="اسم العميل" value={displayFields.customerName} />
+            )}
             <Field label="المنطقة" value={displayFields.areaName} />
             <Field label="الساعات" value={String(displayFields.hours)} />
             {/* Amount is financial information, same as payment status — manager only. */}
@@ -116,16 +124,28 @@ export function BookingDetailsModal({
               <Field label="هاتف العميل" value={displayFields.customerPhone} dir="ltr" />
             )}
             {displayFields.customerLocation && (
-              <Field label="الموقع" value={displayFields.customerLocation} />
+              <div>
+                <dt className="text-xs text-slate-500">الموقع</dt>
+                <dd>
+                  <a
+                    href={mapsLinkFor(displayFields.customerLocation)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-medium text-sky-600 underline hover:text-sky-800"
+                  >
+                    {displayFields.customerLocation}
+                  </a>
+                </dd>
+              </div>
             )}
           </dl>
 
-          {isRecurring && (
-            <div className="rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-800">
-              هذا حجز ضمن جدول متكرر أسبوعي
-              {!isManager ? " ويُدار من قبل المدير." : "."}
-            </div>
-          )}
+          {/* Display recurrence type: one-time booking vs part of a repeating weekly schedule. */}
+          <div className="rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-800">
+            {isRecurring
+              ? `نوع الحجز: تكرار أسبوعي${!isManager ? " (يُدار من قبل المدير)" : ""}`
+              : "نوع الحجز: لهذا الأسبوع فقط"}
+          </div>
 
           {/*
             Employees never see anything about payment status — not a
@@ -417,6 +437,7 @@ function EditForm({
   const [areaName, setAreaName] = useState(initial.areaName);
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
+  const [customerName, setCustomerName] = useState(initial.customerName);
   const [customerPhone, setCustomerPhone] = useState(initial.customerPhone);
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation);
   const [localError, setLocalError] = useState("");
@@ -444,6 +465,7 @@ function EditForm({
       areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
+      customerName,
       customerPhone,
       customerLocation,
       date,
@@ -476,6 +498,7 @@ function EditForm({
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
       </div>
+      <TextInput label="اسم العميل" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
       <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
       <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
       <div className="flex gap-3">
@@ -526,7 +549,14 @@ function RecurringEditForm({
   onCancel,
   onSubmit,
 }: {
-  initial: { areaName: string; hours: number; amount: number; customerPhone?: string; customerLocation?: string };
+  initial: {
+    areaName: string;
+    hours: number;
+    amount: number;
+    customerName?: string;
+    customerPhone?: string;
+    customerLocation?: string;
+  };
   loading: boolean;
   error: string;
   onCancel: () => void;
@@ -536,6 +566,7 @@ function RecurringEditForm({
   const [areaName, setAreaName] = useState(initial.areaName ?? "");
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
+  const [customerName, setCustomerName] = useState(initial.customerName ?? "");
   const [customerPhone, setCustomerPhone] = useState(initial.customerPhone ?? "");
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation ?? "");
   const [localError, setLocalError] = useState("");
@@ -554,6 +585,7 @@ function RecurringEditForm({
       areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
+      customerName,
       customerPhone,
       customerLocation,
     });
@@ -582,6 +614,7 @@ function RecurringEditForm({
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
       </div>
+      <TextInput label="اسم العميل" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
       <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
       <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
       <div className="flex gap-3">

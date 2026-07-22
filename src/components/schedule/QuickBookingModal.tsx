@@ -6,10 +6,13 @@ import { Button } from "@/components/ui/Button";
 import { TextInput, TextArea } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
 import { ApiError, createBooking } from "@/lib/booking";
-import { formatDateAr, weekdayLabelAr } from "@/lib/date";
+import { dayOfWeek, formatDateAr, weekdayLabelAr } from "@/lib/date";
+import { createRecurringSchedule } from "@/lib/recurring";
 import type { BookingSource, Shift, Worker } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
+
+type RecurrenceType = "once" | "weekly";
 
 /**
  * Payment is never captured here — booking creation stays free of any
@@ -23,6 +26,7 @@ export function QuickBookingModal({
   date,
   shift,
   source,
+  allowRecurrence = false,
   onSuccess,
 }: {
   open: boolean;
@@ -31,13 +35,22 @@ export function QuickBookingModal({
   date: string;
   shift: Shift;
   source: BookingSource;
+  /**
+   * Weekly Booking Grid only — offers "This Week Only" vs "Repeat Every
+   * Week". Defaults to false everywhere else (Daily/Weekly Schedule, Daily
+   * Route), which keeps their booking creation exactly as it always was: a
+   * single one-off booking, no recurrence choice shown at all.
+   */
+  allowRecurrence?: boolean;
   onSuccess: () => void;
 }) {
   const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
+  const [recurrence, setRecurrence] = useState<RecurrenceType>("once");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -45,8 +58,10 @@ export function QuickBookingModal({
     setAreaName("");
     setHours("");
     setAmount("");
+    setCustomerName("");
     setCustomerPhone("");
     setCustomerLocation("");
+    setRecurrence("once");
     setError("");
   }
 
@@ -72,20 +87,38 @@ export function QuickBookingModal({
 
     setLoading(true);
     try {
-      await createBooking({
-        date,
-        shift,
-        workerId: worker.id,
-        workerName: worker.name,
-        areaId: trimmedArea,
-        areaName: trimmedArea,
-        hours: hoursNum,
-        amount: amountNum,
-        customerPhone,
-        customerLocation,
-        source,
-        recurringSeriesId: null,
-      });
+      if (allowRecurrence && recurrence === "weekly") {
+        await createRecurringSchedule({
+          workerId: worker.id,
+          workerName: worker.name,
+          areaId: trimmedArea,
+          areaName: trimmedArea,
+          shift,
+          dayOfWeek: dayOfWeek(date),
+          hours: hoursNum,
+          amount: amountNum,
+          customerName,
+          customerPhone,
+          customerLocation,
+          startDate: date,
+        });
+      } else {
+        await createBooking({
+          date,
+          shift,
+          workerId: worker.id,
+          workerName: worker.name,
+          areaId: trimmedArea,
+          areaName: trimmedArea,
+          hours: hoursNum,
+          amount: amountNum,
+          customerName,
+          customerPhone,
+          customerLocation,
+          source,
+          recurringSeriesId: null,
+        });
+      }
       reset();
       onSuccess();
       onClose();
@@ -113,6 +146,30 @@ export function QuickBookingModal({
             {formatDateAr(date)} · {SHIFT_LABEL[shift]}
           </p>
         </div>
+
+        {allowRecurrence && (
+          <div className="space-y-2 rounded-xl border border-slate-200 p-3">
+            <p className="text-xs font-semibold text-slate-500">نوع التكرار</p>
+            <label className="flex items-center gap-2 py-1">
+              <input
+                type="radio"
+                checked={recurrence === "once"}
+                onChange={() => setRecurrence("once")}
+                className="h-4 w-4 accent-emerald-600"
+              />
+              <span className="text-sm text-slate-800">لهذا الأسبوع فقط</span>
+            </label>
+            <label className="flex items-center gap-2 py-1">
+              <input
+                type="radio"
+                checked={recurrence === "weekly"}
+                onChange={() => setRecurrence("weekly")}
+                className="h-4 w-4 accent-emerald-600"
+              />
+              <span className="text-sm text-slate-800">تكرار كل أسبوع</span>
+            </label>
+          </div>
+        )}
 
         <TextInput
           label="المنطقة"
@@ -145,6 +202,11 @@ export function QuickBookingModal({
           />
         </div>
 
+        <TextInput
+          label="اسم العميل"
+          value={customerName}
+          onChange={(e) => setCustomerName(e.target.value)}
+        />
         <TextInput
           label="هاتف العميل"
           type="tel"

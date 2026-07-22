@@ -21,6 +21,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   route_picked_up: "تسجيل استلام",
   route_dropoff_reset: "إعادة تعيين التنزيل",
   route_pickup_reset: "إعادة تعيين الاستلام",
+  route_order_updated: "تحديث ترتيب خط السير",
   worker_added: "إضافة عاملة",
   worker_edited: "تعديل بيانات عاملة",
   worker_activated: "تفعيل عاملة",

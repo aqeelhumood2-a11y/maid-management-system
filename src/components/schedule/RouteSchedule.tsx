@@ -8,18 +8,25 @@ import { useManagerSession } from "@/context/ManagerSessionContext";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
+import { useRouteOrder } from "@/hooks/useRouteOrder";
 import { resolveCell } from "@/lib/availability";
 import { ApiError, updateBookingRouteStatus, type RouteStatusAction } from "@/lib/booking";
 import { setRecurringOccurrenceRouteStatus } from "@/lib/recurring";
 import { formatTimestampAr, todayBahrain } from "@/lib/date";
+import { mapsLinkFor } from "@/lib/maps";
+import { applyRouteOrder } from "@/lib/routeOrder";
 import type { CellResolution, RecurringSchedule, Shift, Worker } from "@/lib/types";
 
-const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
+const SHIFT_TABS: { value: Shift; label: string }[] = [
+  { value: "morning", label: "الجولة الصباحية" },
+  { value: "afternoon", label: "الجولة المسائية" },
+];
 
 interface RouteRow {
   worker: Worker;
   shift: Shift;
   areaName: string;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   hours: number;
@@ -34,11 +41,12 @@ function toDate(ts: { _seconds: number } | null): Date | null {
 }
 
 /**
- * Requirement #5 — shows exactly: worker, area, phone, location, duration,
- * drop-off time, planned pickup, actual pickup, status, and the two action
- * buttons. Nothing about payment or pricing appears here at all (and
- * couldn't: GET /api/bookings already strips those fields for a non-manager
- * session before they ever reach the browser).
+ * Morning Route and Evening Route are two entirely independent sections —
+ * each is built from its own resolveCell pass and its own saved route
+ * order, so nothing about one shift ever affects the other. Nothing about
+ * payment or pricing appears here at all (and couldn't: GET /api/bookings
+ * already strips those fields for a non-manager session before they ever
+ * reach the browser).
  */
 export function RouteSchedule() {
   const { isManager } = useManagerSession();
@@ -49,16 +57,17 @@ export function RouteSchedule() {
   const { bookings, loading: bookingsLoading } = useBookingsForDates(date ? [date] : []);
   const { schedules } = useRecurringSchedules();
   const { exceptions } = useRecurringExceptions();
+  const { workerIds: morningOrder } = useRouteOrder(date, "morning");
+  const { workerIds: afternoonOrder } = useRouteOrder(date, "afternoon");
 
   const [error, setError] = useState("");
   const [pendingKey, setPendingKey] = useState<string | null>(null);
 
-  const rows = useMemo<RouteRow[]>(() => {
-    const shifts: Shift[] = ["morning", "afternoon"];
-    return workers
-      .filter((w) => w.active)
-      .flatMap((worker) =>
-        shifts.map((shift): RouteRow | null => {
+  const rowsByShift = useMemo(() => {
+    const build = (shift: Shift): RouteRow[] =>
+      workers
+        .filter((w) => w.active)
+        .map((worker): RouteRow | null => {
           const resolution: CellResolution = resolveCell(worker, date, shift, bookings, schedules, exceptions);
           if (resolution.status !== "booked") return null;
           const booking = resolution.booking;
@@ -67,6 +76,7 @@ export function RouteSchedule() {
             worker,
             shift,
             areaName: booking?.areaName ?? recurring?.areaName ?? "",
+            customerName: booking?.customerName ?? recurring?.customerName ?? "",
             customerPhone: booking?.customerPhone ?? recurring?.customerPhone ?? "",
             customerLocation: booking?.customerLocation ?? recurring?.customerLocation ?? "",
             hours: booking?.hours ?? recurring?.hours ?? 0,
@@ -76,9 +86,13 @@ export function RouteSchedule() {
             recurring: booking ? null : recurring,
           };
         })
-      )
-      .filter((r): r is RouteRow => r !== null);
-  }, [workers, date, bookings, schedules, exceptions]);
+        .filter((r): r is RouteRow => r !== null);
+
+    return {
+      morning: applyRouteOrder(build("morning"), morningOrder, (r) => r.worker.id),
+      afternoon: applyRouteOrder(build("afternoon"), afternoonOrder, (r) => r.worker.id),
+    };
+  }, [workers, date, bookings, schedules, exceptions, morningOrder, afternoonOrder]);
 
   const loading = workersLoading || bookingsLoading;
 
@@ -111,8 +125,40 @@ export function RouteSchedule() {
 
       {loading ? (
         <Spinner />
-      ) : rows.length === 0 ? (
-        <EmptyState message="لا يوجد حجوزات نشطة في هذا التاريخ" />
+      ) : (
+        SHIFT_TABS.map((tab) => (
+          <RouteSection
+            key={tab.value}
+            title={tab.label}
+            rows={rowsByShift[tab.value]}
+            isManager={isManager}
+            pendingKey={pendingKey}
+            onAction={handleAction}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function RouteSection({
+  title,
+  rows,
+  isManager,
+  pendingKey,
+  onAction,
+}: {
+  title: string;
+  rows: RouteRow[];
+  isManager: boolean;
+  pendingKey: string | null;
+  onAction: (row: RouteRow, action: RouteStatusAction) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <h2 className="text-sm font-semibold text-slate-700">{title}</h2>
+      {rows.length === 0 ? (
+        <EmptyState message="لا يوجد حجوزات نشطة في هذه الجولة" />
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
           <ul className="divide-y divide-slate-100">
@@ -131,11 +177,19 @@ export function RouteSchedule() {
                 <li key={`${row.worker.id}_${row.shift}`} className="flex flex-col gap-3 px-4 py-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div>
-                      <p className="font-medium text-slate-900">
-                        {row.worker.name} · {SHIFT_LABEL[row.shift]}
-                      </p>
+                      <p className="font-medium text-slate-900">{row.worker.name}</p>
                       <p className="text-sm text-slate-500">{row.areaName}</p>
-                      {row.customerLocation && <p className="text-xs text-slate-400">{row.customerLocation}</p>}
+                      {row.customerName && <p className="text-sm text-slate-700">{row.customerName}</p>}
+                      {row.customerLocation && (
+                        <a
+                          href={mapsLinkFor(row.customerLocation)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-sky-600 underline hover:text-sky-800"
+                        >
+                          {row.customerLocation}
+                        </a>
+                      )}
                       <p className="text-xs text-slate-400">{row.hours} ساعة</p>
                     </div>
                     <Badge color={status.color}>{status.label}</Badge>
@@ -177,7 +231,7 @@ export function RouteSchedule() {
                       size="sm"
                       disabled={!!row.dropOffAt}
                       loading={pendingKey === `${row.worker.id}_${row.shift}_drop_off`}
-                      onClick={() => handleAction(row, "drop_off")}
+                      onClick={() => onAction(row, "drop_off")}
                     >
                       تم التنزيل
                     </Button>
@@ -185,7 +239,7 @@ export function RouteSchedule() {
                       size="sm"
                       disabled={!row.dropOffAt || !!row.pickupAt}
                       loading={pendingKey === `${row.worker.id}_${row.shift}_pickup`}
-                      onClick={() => handleAction(row, "pickup")}
+                      onClick={() => onAction(row, "pickup")}
                     >
                       تم الاستلام
                     </Button>
@@ -196,7 +250,7 @@ export function RouteSchedule() {
                           variant="ghost"
                           disabled={!row.dropOffAt}
                           loading={pendingKey === `${row.worker.id}_${row.shift}_reset_drop_off`}
-                          onClick={() => handleAction(row, "reset_drop_off")}
+                          onClick={() => onAction(row, "reset_drop_off")}
                         >
                           إعادة تعيين التنزيل
                         </Button>
@@ -205,7 +259,7 @@ export function RouteSchedule() {
                           variant="ghost"
                           disabled={!row.pickupAt}
                           loading={pendingKey === `${row.worker.id}_${row.shift}_reset_pickup`}
-                          onClick={() => handleAction(row, "reset_pickup")}
+                          onClick={() => onAction(row, "reset_pickup")}
                         >
                           إعادة تعيين الاستلام
                         </Button>

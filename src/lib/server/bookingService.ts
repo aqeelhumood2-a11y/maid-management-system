@@ -179,6 +179,7 @@ export interface CreateBookingInput {
   areaName: string;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -242,6 +243,7 @@ async function createBookingCore(db: Firestore, input: CreateBookingInput, actor
       // updateBookingRouteStatusServer below.
       dropOffAt: null,
       pickupAt: null,
+      customerName: input.customerName,
       customerPhone: input.customerPhone,
       customerLocation: input.customerLocation,
       source: input.source,
@@ -322,6 +324,7 @@ export interface BookingPatch {
   areaName: string;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   date?: string;
@@ -375,6 +378,7 @@ export async function updateBookingServer(
       areaName: patch.areaName,
       hours: patch.hours,
       amount: patch.amount,
+      customerName: patch.customerName,
       customerPhone: patch.customerPhone,
       customerLocation: patch.customerLocation,
       updatedBy: actor.uid,

@@ -24,6 +24,7 @@ export default function FutureBookingPage() {
   const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [error, setError] = useState("");
@@ -47,6 +48,7 @@ export default function FutureBookingPage() {
     setAreaName("");
     setHours("");
     setAmount("");
+    setCustomerName("");
     setCustomerPhone("");
     setCustomerLocation("");
     setFridayConfirmed(false);
@@ -80,6 +82,7 @@ export default function FutureBookingPage() {
         areaName: trimmedArea,
         hours: hoursNum,
         amount: amountNum,
+        customerName,
         customerPhone,
         customerLocation,
         source: "manager_future",
@@ -164,6 +167,7 @@ export default function FutureBookingPage() {
           <TextInput label="المبلغ (د.ب)" type="number" required min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
 
+        <TextInput label="اسم العميل" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
         <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
         <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
 

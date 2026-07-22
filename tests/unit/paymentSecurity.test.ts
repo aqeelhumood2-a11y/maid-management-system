@@ -29,6 +29,7 @@ function paidBooking(overrides: Partial<Booking> = {}): Booking {
     paymentBy: "manager",
     dropOffAt: null,
     pickupAt: null,
+    customerName: "أحمد",
     customerPhone: "36000000",
     customerLocation: "قريب من السوق",
     source: "today",

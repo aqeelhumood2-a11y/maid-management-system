@@ -106,6 +106,7 @@ export default function WeeklyBookingGridPage() {
           date={selection.date}
           shift={selection.shift}
           source="weekly"
+          allowRecurrence
           onSuccess={() => {}}
         />
       )}

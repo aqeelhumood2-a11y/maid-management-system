@@ -48,6 +48,7 @@ const BASE_INPUT = {
   areaName: "المنامة",
   hours: 4,
   amount: 10,
+  customerName: "",
   customerPhone: "",
   customerLocation: "",
   source: "today" as const,

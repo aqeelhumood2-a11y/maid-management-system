@@ -34,6 +34,7 @@ function makeBooking(overrides: Partial<Booking> = {}): Booking {
     paymentBy: null,
     dropOffAt: null,
     pickupAt: null,
+    customerName: "",
     customerPhone: "",
     customerLocation: "",
     source: "today",
@@ -62,6 +63,7 @@ function makeRecurring(overrides: Partial<RecurringSchedule> = {}): RecurringSch
     dayOfWeek: 3, // Wednesday
     hours: 4,
     amount: 10,
+    customerName: "",
     customerPhone: "",
     customerLocation: "",
     startDate: "2026-01-01",

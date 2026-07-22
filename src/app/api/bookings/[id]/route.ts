@@ -17,6 +17,7 @@ function pickEditableFields(body: Record<string, unknown>): BookingPatch {
     areaName: String(body.areaName ?? ""),
     hours: Number(body.hours),
     amount: Number(body.amount),
+    customerName: String(body.customerName ?? ""),
     customerPhone: String(body.customerPhone ?? ""),
     customerLocation: String(body.customerLocation ?? ""),
   };

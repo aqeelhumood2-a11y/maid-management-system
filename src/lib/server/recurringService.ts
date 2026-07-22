@@ -74,6 +74,7 @@ export interface CreateRecurringInput {
   dayOfWeek: number;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   startDate: string;
@@ -98,6 +99,7 @@ export async function createRecurringScheduleServer(
     dayOfWeek: input.dayOfWeek,
     hours: input.hours,
     amount: input.amount,
+    customerName: input.customerName,
     customerPhone: input.customerPhone,
     customerLocation: input.customerLocation,
     startDate: input.startDate,
@@ -172,6 +174,7 @@ export async function editRecurringOccurrenceServer(
           areaName: fields.areaName,
           hours: fields.hours,
           amount: fields.amount,
+          customerName: fields.customerName,
           customerPhone: fields.customerPhone,
           customerLocation: fields.customerLocation,
           source: "recurring",
@@ -191,6 +194,7 @@ export async function editRecurringOccurrenceServer(
       areaName: fields.areaName,
       hours: fields.hours,
       amount: fields.amount,
+      customerName: fields.customerName,
       customerPhone: fields.customerPhone,
       customerLocation: fields.customerLocation,
       updatedBy: actor.uid,
@@ -230,6 +234,7 @@ export async function editRecurringOccurrenceServer(
     dayOfWeek: recurring.dayOfWeek,
     hours: fields.hours,
     amount: fields.amount,
+    customerName: fields.customerName,
     customerPhone: fields.customerPhone,
     customerLocation: fields.customerLocation,
     startDate: date,
@@ -292,6 +297,7 @@ export async function setRecurringOccurrencePaymentServer(
           areaName: recurring.areaName,
           hours: recurring.hours,
           amount: recurring.amount,
+          customerName: recurring.customerName,
           customerPhone: recurring.customerPhone,
           customerLocation: recurring.customerLocation,
           source: "recurring",
@@ -339,6 +345,7 @@ export async function setRecurringOccurrenceRouteStatusServer(
           areaName: recurring.areaName,
           hours: recurring.hours,
           amount: recurring.amount,
+          customerName: recurring.customerName,
           customerPhone: recurring.customerPhone,
           customerLocation: recurring.customerLocation,
           source: "recurring",

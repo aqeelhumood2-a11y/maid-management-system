@@ -37,6 +37,7 @@ export interface CreateRecurringInput {
   dayOfWeek: number;
   hours: number;
   amount: number;
+  customerName: string;
   customerPhone: string;
   customerLocation: string;
   startDate: string;
