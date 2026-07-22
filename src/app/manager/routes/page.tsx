@@ -5,18 +5,19 @@ import { BookingDetailsModal } from "@/components/schedule/BookingDetailsModal";
 import { QuickBookingModal } from "@/components/schedule/QuickBookingModal";
 import { Button } from "@/components/ui/Button";
 import { SelectInput, TextInput } from "@/components/ui/Field";
-import { EmptyState, Spinner, ErrorBanner } from "@/components/ui/Feedback";
+import { Badge, EmptyState, Spinner, ErrorBanner } from "@/components/ui/Feedback";
 import { Modal } from "@/components/ui/Modal";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
 import { useRouteOrder } from "@/hooks/useRouteOrder";
 import { resolveCell } from "@/lib/availability";
-import { ApiError } from "@/lib/booking";
+import { ApiError, updateBookingRouteStatus, type RouteStatusAction } from "@/lib/booking";
 import { formatDateAr, todayBahrain, weekdayLabelAr } from "@/lib/date";
 import { mapsLinkFor } from "@/lib/maps";
+import { setRecurringOccurrenceRouteStatus } from "@/lib/recurring";
 import { applyRouteOrder, saveRouteOrder } from "@/lib/routeOrder";
-import type { CellResolution, Shift, Worker } from "@/lib/types";
+import type { CellResolution, RecurringSchedule, Shift, Worker } from "@/lib/types";
 
 const SHIFT_TABS: { value: Shift; label: string }[] = [
   { value: "morning", label: "الجولة الصباحية" },
@@ -31,6 +32,14 @@ interface RouteRow {
   customerPhone: string;
   customerLocation: string;
   isRecurring: boolean;
+  bookingId: string | null;
+  recurring: RecurringSchedule | null;
+  dropOffAt: Date | null;
+  pickupAt: Date | null;
+}
+
+function toDate(ts: { _seconds: number } | null): Date | null {
+  return ts ? new Date(ts._seconds * 1000) : null;
 }
 
 /**
@@ -48,6 +57,8 @@ export default function RoutesPage() {
   const [editing, setEditing] = useState<RouteRow | null>(null);
   const [deleting, setDeleting] = useState<RouteRow | null>(null);
   const [creating, setCreating] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const [actionPendingKey, setActionPendingKey] = useState<string | null>(null);
 
   const { workers, loading: workersLoading } = useWorkers();
   const { bookings, loading: bookingsLoading } = useBookingsForDates(date ? [date] : []);
@@ -72,6 +83,10 @@ export default function RoutesPage() {
             customerPhone: b.customerPhone,
             customerLocation: b.customerLocation,
             isRecurring,
+            bookingId: b.id,
+            recurring: isRecurring ? (schedules.find((s) => s.id === b.recurringSeriesId) ?? null) : null,
+            dropOffAt: toDate(b.dropOffAt),
+            pickupAt: toDate(b.pickupAt),
           };
         }
         const r = resolution.virtualOccurrence!.recurring;
@@ -83,6 +98,10 @@ export default function RoutesPage() {
           customerPhone: r.customerPhone,
           customerLocation: r.customerLocation,
           isRecurring,
+          bookingId: null,
+          recurring: r,
+          dropOffAt: null,
+          pickupAt: null,
         };
       })
       .filter((r): r is RouteRow => r !== null);
@@ -132,6 +151,23 @@ export default function RoutesPage() {
     }
   }
 
+  async function handleRouteStatusReset(row: RouteRow, action: RouteStatusAction) {
+    const key = `${row.worker.id}_${action}`;
+    setActionError("");
+    setActionPendingKey(key);
+    try {
+      if (row.bookingId) {
+        await updateBookingRouteStatus(row.bookingId, action);
+      } else if (row.recurring) {
+        await setRecurringOccurrenceRouteStatus({ recurring: row.recurring, date, action });
+      }
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : "تعذر تحديث حالة خط السير");
+    } finally {
+      setActionPendingKey(null);
+    }
+  }
+
   const bookedWorkerIds = useMemo(() => new Set(baseRows.map((r) => r.worker.id)), [baseRows]);
   const eligibleWorkers = useMemo(() => {
     if (!date) return [];
@@ -178,6 +214,7 @@ export default function RoutesPage() {
       )}
 
       <ErrorBanner message={orderError} />
+      <ErrorBanner message={actionError} />
 
       {loading ? (
         <Spinner />
@@ -186,64 +223,98 @@ export default function RoutesPage() {
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
           <ul className="divide-y divide-slate-100">
-            {rows.map((r, index) => (
-              <li key={r.worker.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <div className="flex items-start gap-2">
-                  <div className="flex flex-col gap-1 pt-0.5">
-                    <button
-                      type="button"
-                      disabled={index === 0}
-                      onClick={() => moveRow(index, -1)}
-                      aria-label="نقل للأعلى"
-                      className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
-                    >
-                      ▲
-                    </button>
-                    <button
-                      type="button"
-                      disabled={index === rows.length - 1}
-                      onClick={() => moveRow(index, 1)}
-                      aria-label="نقل للأسفل"
-                      className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
-                    >
-                      ▼
-                    </button>
+            {rows.map((r, index) => {
+              const status: { label: string; color: "green" | "yellow" | "gray" } = r.pickupAt
+                ? { label: "تم الاستلام", color: "green" }
+                : r.dropOffAt
+                  ? { label: "تم التنزيل — بانتظار الاستلام", color: "yellow" }
+                  : { label: "بانتظار التنزيل", color: "gray" };
+
+              return (
+                <li key={r.worker.id} className="flex flex-col gap-3 px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-start gap-2">
+                      <div className="flex flex-col gap-1 pt-0.5">
+                        <button
+                          type="button"
+                          disabled={index === 0}
+                          onClick={() => moveRow(index, -1)}
+                          aria-label="نقل للأعلى"
+                          className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
+                        >
+                          ▲
+                        </button>
+                        <button
+                          type="button"
+                          disabled={index === rows.length - 1}
+                          onClick={() => moveRow(index, 1)}
+                          aria-label="نقل للأسفل"
+                          className="flex h-6 w-6 items-center justify-center rounded bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-30"
+                        >
+                          ▼
+                        </button>
+                      </div>
+                      <div>
+                        <p className="font-medium text-slate-900">{r.worker.name}</p>
+                        <p className="text-sm text-slate-500">{r.areaName}</p>
+                        {r.customerName && <p className="text-sm text-slate-700">{r.customerName}</p>}
+                        {r.customerLocation && (
+                          <a
+                            href={mapsLinkFor(r.customerLocation)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-sky-600 underline hover:text-sky-800"
+                          >
+                            {r.customerLocation}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {r.customerPhone && (
+                        <a
+                          href={`tel:${r.customerPhone}`}
+                          dir="ltr"
+                          className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
+                        >
+                          📞 {r.customerPhone}
+                        </a>
+                      )}
+                      <Button size="sm" variant="secondary" onClick={() => setEditing(r)}>
+                        تعديل
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => setDeleting(r)}>
+                        حذف
+                      </Button>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-medium text-slate-900">{r.worker.name}</p>
-                    <p className="text-sm text-slate-500">{r.areaName}</p>
-                    {r.customerName && <p className="text-sm text-slate-700">{r.customerName}</p>}
-                    {r.customerLocation && (
-                      <a
-                        href={mapsLinkFor(r.customerLocation)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-sky-600 underline hover:text-sky-800"
-                      >
-                        {r.customerLocation}
-                      </a>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {r.customerPhone && (
-                    <a
-                      href={`tel:${r.customerPhone}`}
-                      dir="ltr"
-                      className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
+
+                  {/* Route status correction — manager only, and only reachable here in the
+                      Manager Dashboard; the Employee Route Schedule has no such control at all. */}
+                  <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
+                    <Badge color={status.color}>{status.label}</Badge>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={!r.dropOffAt}
+                      loading={actionPendingKey === `${r.worker.id}_reset_drop_off`}
+                      onClick={() => handleRouteStatusReset(r, "reset_drop_off")}
                     >
-                      📞 {r.customerPhone}
-                    </a>
-                  )}
-                  <Button size="sm" variant="secondary" onClick={() => setEditing(r)}>
-                    تعديل
-                  </Button>
-                  <Button size="sm" variant="danger" onClick={() => setDeleting(r)}>
-                    حذف
-                  </Button>
-                </div>
-              </li>
-            ))}
+                      إعادة تعيين التنزيل
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={!r.pickupAt}
+                      loading={actionPendingKey === `${r.worker.id}_reset_pickup`}
+                      onClick={() => handleRouteStatusReset(r, "reset_pickup")}
+                    >
+                      إعادة تعيين الاستلام
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

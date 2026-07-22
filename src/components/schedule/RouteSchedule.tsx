@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/Field";
 import { Badge, EmptyState, ErrorBanner, Spinner } from "@/components/ui/Feedback";
-import { useManagerSession } from "@/context/ManagerSessionContext";
 import { useWorkers } from "@/hooks/useWorkers";
 import { useBookingsForDates } from "@/hooks/useBookingsForDates";
 import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurring";
@@ -17,9 +16,9 @@ import { mapsLinkFor } from "@/lib/maps";
 import { applyRouteOrder } from "@/lib/routeOrder";
 import type { CellResolution, RecurringSchedule, Shift, Worker } from "@/lib/types";
 
-const SHIFT_TABS: { value: Shift; label: string }[] = [
-  { value: "morning", label: "الجولة الصباحية" },
-  { value: "afternoon", label: "الجولة المسائية" },
+const SHIFT_OPTIONS: { value: Shift; label: string }[] = [
+  { value: "morning", label: "صباحي" },
+  { value: "afternoon", label: "مسائي" },
 ];
 
 interface RouteRow {
@@ -41,58 +40,55 @@ function toDate(ts: { _seconds: number } | null): Date | null {
 }
 
 /**
- * Morning Route and Evening Route are two entirely independent sections —
- * each is built from its own resolveCell pass and its own saved route
- * order, so nothing about one shift ever affects the other. Nothing about
- * payment or pricing appears here at all (and couldn't: GET /api/bookings
+ * The Employee Route Schedule — exactly one shift is visible at a time via
+ * the صباحي/مسائي selector below; switching it swaps the entire list, it
+ * never shows both shifts stacked together. This screen carries no
+ * manager-only affordance at all (no reset/correction actions) — those live
+ * exclusively in the Manager Dashboard's Daily Route page. Nothing about
+ * payment or pricing appears here either (and couldn't: GET /api/bookings
  * already strips those fields for a non-manager session before they ever
  * reach the browser).
  */
 export function RouteSchedule() {
-  const { isManager } = useManagerSession();
   const today = todayBahrain();
   const [date, setDate] = useState(today);
+  const [shift, setShift] = useState<Shift>("morning");
 
   const { workers, loading: workersLoading } = useWorkers();
   const { bookings, loading: bookingsLoading } = useBookingsForDates(date ? [date] : []);
   const { schedules } = useRecurringSchedules();
   const { exceptions } = useRecurringExceptions();
-  const { workerIds: morningOrder } = useRouteOrder(date, "morning");
-  const { workerIds: afternoonOrder } = useRouteOrder(date, "afternoon");
+  const { workerIds: routeOrder } = useRouteOrder(date, shift);
 
   const [error, setError] = useState("");
   const [pendingKey, setPendingKey] = useState<string | null>(null);
 
-  const rowsByShift = useMemo(() => {
-    const build = (shift: Shift): RouteRow[] =>
-      workers
-        .filter((w) => w.active)
-        .map((worker): RouteRow | null => {
-          const resolution: CellResolution = resolveCell(worker, date, shift, bookings, schedules, exceptions);
-          if (resolution.status !== "booked") return null;
-          const booking = resolution.booking;
-          const recurring = resolution.virtualOccurrence?.recurring ?? null;
-          return {
-            worker,
-            shift,
-            areaName: booking?.areaName ?? recurring?.areaName ?? "",
-            customerName: booking?.customerName ?? recurring?.customerName ?? "",
-            customerPhone: booking?.customerPhone ?? recurring?.customerPhone ?? "",
-            customerLocation: booking?.customerLocation ?? recurring?.customerLocation ?? "",
-            hours: booking?.hours ?? recurring?.hours ?? 0,
-            dropOffAt: toDate(booking?.dropOffAt ?? null),
-            pickupAt: toDate(booking?.pickupAt ?? null),
-            bookingId: booking?.id ?? null,
-            recurring: booking ? null : recurring,
-          };
-        })
-        .filter((r): r is RouteRow => r !== null);
+  const rows = useMemo<RouteRow[]>(() => {
+    const built = workers
+      .filter((w) => w.active)
+      .map((worker): RouteRow | null => {
+        const resolution: CellResolution = resolveCell(worker, date, shift, bookings, schedules, exceptions);
+        if (resolution.status !== "booked") return null;
+        const booking = resolution.booking;
+        const recurring = resolution.virtualOccurrence?.recurring ?? null;
+        return {
+          worker,
+          shift,
+          areaName: booking?.areaName ?? recurring?.areaName ?? "",
+          customerName: booking?.customerName ?? recurring?.customerName ?? "",
+          customerPhone: booking?.customerPhone ?? recurring?.customerPhone ?? "",
+          customerLocation: booking?.customerLocation ?? recurring?.customerLocation ?? "",
+          hours: booking?.hours ?? recurring?.hours ?? 0,
+          dropOffAt: toDate(booking?.dropOffAt ?? null),
+          pickupAt: toDate(booking?.pickupAt ?? null),
+          bookingId: booking?.id ?? null,
+          recurring: booking ? null : recurring,
+        };
+      })
+      .filter((r): r is RouteRow => r !== null);
 
-    return {
-      morning: applyRouteOrder(build("morning"), morningOrder, (r) => r.worker.id),
-      afternoon: applyRouteOrder(build("afternoon"), afternoonOrder, (r) => r.worker.id),
-    };
-  }, [workers, date, bookings, schedules, exceptions, morningOrder, afternoonOrder]);
+    return applyRouteOrder(built, routeOrder, (r) => r.worker.id);
+  }, [workers, date, shift, bookings, schedules, exceptions, routeOrder]);
 
   const loading = workersLoading || bookingsLoading;
 
@@ -117,47 +113,34 @@ export function RouteSchedule() {
     <div className="flex flex-1 flex-col gap-4">
       <h1 className="text-xl font-bold text-slate-900">خط السير</h1>
 
-      <div className="max-w-xs rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <div className="flex flex-col gap-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200 sm:flex-row sm:items-end">
         <TextInput label="التاريخ" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-slate-700">الفترة</span>
+          <div className="flex gap-2 rounded-xl bg-slate-100 p-1">
+            {SHIFT_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                aria-pressed={shift === opt.value}
+                onClick={() => setShift(opt.value)}
+                className={`rounded-lg px-5 py-2 text-sm font-medium transition-colors ${
+                  shift === opt.value ? "bg-emerald-600 text-white" : "text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <ErrorBanner message={error} />
 
       {loading ? (
         <Spinner />
-      ) : (
-        SHIFT_TABS.map((tab) => (
-          <RouteSection
-            key={tab.value}
-            title={tab.label}
-            rows={rowsByShift[tab.value]}
-            isManager={isManager}
-            pendingKey={pendingKey}
-            onAction={handleAction}
-          />
-        ))
-      )}
-    </div>
-  );
-}
-
-function RouteSection({
-  title,
-  rows,
-  isManager,
-  pendingKey,
-  onAction,
-}: {
-  title: string;
-  rows: RouteRow[];
-  isManager: boolean;
-  pendingKey: string | null;
-  onAction: (row: RouteRow, action: RouteStatusAction) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-semibold text-slate-700">{title}</h2>
-      {rows.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState message="لا يوجد حجوزات نشطة في هذه الجولة" />
       ) : (
         <div className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -231,7 +214,7 @@ function RouteSection({
                       size="sm"
                       disabled={!!row.dropOffAt}
                       loading={pendingKey === `${row.worker.id}_${row.shift}_drop_off`}
-                      onClick={() => onAction(row, "drop_off")}
+                      onClick={() => handleAction(row, "drop_off")}
                     >
                       تم التنزيل
                     </Button>
@@ -239,32 +222,10 @@ function RouteSection({
                       size="sm"
                       disabled={!row.dropOffAt || !!row.pickupAt}
                       loading={pendingKey === `${row.worker.id}_${row.shift}_pickup`}
-                      onClick={() => onAction(row, "pickup")}
+                      onClick={() => handleAction(row, "pickup")}
                     >
                       تم الاستلام
                     </Button>
-                    {isManager && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={!row.dropOffAt}
-                          loading={pendingKey === `${row.worker.id}_${row.shift}_reset_drop_off`}
-                          onClick={() => onAction(row, "reset_drop_off")}
-                        >
-                          إعادة تعيين التنزيل
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={!row.pickupAt}
-                          loading={pendingKey === `${row.worker.id}_${row.shift}_reset_pickup`}
-                          onClick={() => onAction(row, "reset_pickup")}
-                        >
-                          إعادة تعيين الاستلام
-                        </Button>
-                      </>
-                    )}
                   </div>
                 </li>
               );
