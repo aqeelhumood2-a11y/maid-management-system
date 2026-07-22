@@ -173,7 +173,7 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
             <option value="afternoon">مسائي</option>
           </SelectInput>
         </div>
-        <TextInput label="تاريخ البدء" type="date" required min={todayBahrain()} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+        <TextInput label="تاريخ البدء" type="date" required value={startDate} onChange={(e) => setStartDate(e.target.value)} />
         <div className="grid grid-cols-2 gap-3">
           <TextInput label="عدد الساعات" type="number" required min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
           <TextInput label="المبلغ (د.ب)" type="number" required min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />

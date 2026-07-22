@@ -18,6 +18,8 @@ function makeBooking(overrides: Partial<Booking> = {}): Booking {
     paidAmount: null,
     paymentDate: null,
     paymentBy: null,
+    dropOffAt: null,
+    pickupAt: null,
     customerPhone: "36001234",
     customerLocation: "منزل رقم 12، شارع 5",
     source: "today",

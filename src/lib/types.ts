@@ -55,6 +55,8 @@ export interface Booking {
   paidAmount: number | null;
   paymentDate: Timestamp | null;
   paymentBy: string | null;
+  dropOffAt: Timestamp | null;
+  pickupAt: Timestamp | null;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -128,6 +130,10 @@ export type ActivityActionType =
   | "payment_method_changed"
   | "payment_amount_changed"
   | "settlement_calculated"
+  | "route_dropped_off"
+  | "route_picked_up"
+  | "route_dropoff_reset"
+  | "route_pickup_reset"
   | "worker_added"
   | "worker_edited"
   | "worker_activated"

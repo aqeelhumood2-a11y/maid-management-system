@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
-import { getActor } from "@/lib/auth/server";
+import { getActor, isManagerSession } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { cancelBookingServer, ServiceError } from "@/lib/server/bookingService";
 
+/** Manager only — cancelling a booking is no longer available to employees. */
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!(await isManagerSession())) {
+    return NextResponse.json({ error: "هذا الإجراء متاح للمدير فقط" }, { status: 401 });
+  }
   const { id } = await context.params;
   const body = (await request.json()) as { reason?: string | null; cancelScope?: "single" | "forward" };
   const cancelScope = body.cancelScope === "forward" ? "forward" : "single";

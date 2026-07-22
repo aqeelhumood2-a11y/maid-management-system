@@ -46,6 +46,7 @@ export function BookingDetailsModal({
   open,
   onClose,
   worker,
+  workers,
   date,
   shift,
   resolution,
@@ -55,6 +56,8 @@ export function BookingDetailsModal({
   open: boolean;
   onClose: () => void;
   worker: Worker;
+  /** Manager only — lets EditForm offer "Change worker" for a plain booking. */
+  workers: Worker[];
   date: string;
   shift: Shift;
   resolution: CellResolution;
@@ -107,7 +110,8 @@ export function BookingDetailsModal({
           <dl className="grid grid-cols-2 gap-3 text-sm">
             <Field label="المنطقة" value={displayFields.areaName} />
             <Field label="الساعات" value={String(displayFields.hours)} />
-            <Field label="المبلغ" value={`${displayFields.amount} د.ب`} />
+            {/* Amount is financial information, same as payment status — manager only. */}
+            {isManager && <Field label="المبلغ" value={`${displayFields.amount} د.ب`} />}
             {displayFields.customerPhone && (
               <Field label="هاتف العميل" value={displayFields.customerPhone} dir="ltr" />
             )}
@@ -132,7 +136,12 @@ export function BookingDetailsModal({
             <PaymentPanel key={booking?.id ?? `${recurring?.id}_${date}`} payment={payment} onSave={savePayment} />
           )}
 
-          {(!isRecurring || isManager) && (
+          {/*
+            Edit/cancel are manager-only, full stop — a plain (non-recurring)
+            booking used to be editable by whoever created it, but booking
+            management is no longer an employee capability at all.
+          */}
+          {isManager && (
             <div className="flex gap-3 pt-2">
               <Button
                 variant="secondary"
@@ -156,6 +165,7 @@ export function BookingDetailsModal({
       {view === "edit" && booking && (
         <EditForm
           initial={booking}
+          workers={workers}
           loading={loading}
           error={error}
           onCancel={() => setView("details")}
@@ -389,17 +399,21 @@ function PaymentPanel({
 
 function EditForm({
   initial,
+  workers,
   loading,
   error,
   onCancel,
   onSubmit,
 }: {
   initial: Booking;
+  workers: Worker[];
   loading: boolean;
   error: string;
   onCancel: () => void;
   onSubmit: (fields: EditableBookingFields) => void;
 }) {
+  const [date, setDate] = useState(initial.date);
+  const [workerId, setWorkerId] = useState(initial.workerId);
   const [areaName, setAreaName] = useState(initial.areaName);
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
@@ -407,11 +421,20 @@ function EditForm({
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation);
   const [localError, setLocalError] = useState("");
 
+  // The current worker might be inactive; keep them selectable so the form
+  // doesn't silently drop the existing assignment out from under the manager.
+  const workerOptions = workers.some((w) => w.id === initial.workerId)
+    ? workers.filter((w) => w.active || w.id === initial.workerId)
+    : [{ id: initial.workerId, name: initial.workerName } as Worker, ...workers.filter((w) => w.active)];
+
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     const trimmedArea = areaName.trim();
     const hoursNum = Number(hours);
     const amountNum = Number(amount);
+    const selectedWorker = workerOptions.find((w) => w.id === workerId);
+    if (!date) return setLocalError("اختر التاريخ");
+    if (!selectedWorker) return setLocalError("اختر العاملة");
     if (!trimmedArea) return setLocalError("أدخل اسم المنطقة");
     if (!hoursNum || hoursNum <= 0) return setLocalError("أدخل عدد ساعات صحيح");
     if (Number.isNaN(amountNum) || amountNum < 0) return setLocalError("أدخل مبلغاً صحيحاً");
@@ -423,12 +446,25 @@ function EditForm({
       amount: amountNum,
       customerPhone,
       customerLocation,
+      date,
+      workerId: selectedWorker.id,
+      workerName: selectedWorker.name,
     });
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <ErrorBanner message={error || localError} />
+      <div className="grid grid-cols-2 gap-3">
+        <TextInput label="التاريخ" type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
+        <SelectInput label="العاملة" required value={workerId} onChange={(e) => setWorkerId(e.target.value)}>
+          {workerOptions.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name}
+            </option>
+          ))}
+        </SelectInput>
+      </div>
       <TextInput
         label="المنطقة"
         required

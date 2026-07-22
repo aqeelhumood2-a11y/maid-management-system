@@ -63,7 +63,12 @@ export async function createBooking(input: CreateBookingInput): Promise<string> 
   return data.id as string;
 }
 
-/** Never includes payment — see updateBookingPayment, the only way payment ever changes. */
+/**
+ * Never includes payment — see updateBookingPayment, the only way payment
+ * ever changes. date/shift/workerId/workerName ("Edit booking date" /
+ * "Change worker") are optional and manager-only — omit them for a plain
+ * area/hours/phone/location edit that must never move the booking.
+ */
 export interface EditableBookingFields {
   areaId: string;
   areaName: string;
@@ -71,6 +76,10 @@ export interface EditableBookingFields {
   amount: number;
   customerPhone: string;
   customerLocation: string;
+  date?: string;
+  shift?: Shift;
+  workerId?: string;
+  workerName?: string;
 }
 
 export async function updateBookingFields(bookingId: string, patch: EditableBookingFields): Promise<void> {
@@ -93,4 +102,15 @@ export interface PaymentPatch {
 /** Manager only — the server rejects this for any non-manager session. */
 export async function updateBookingPayment(bookingId: string, patch: PaymentPatch): Promise<void> {
   await callApi(`/api/bookings/${bookingId}/payment`, "PATCH", patch);
+}
+
+export type RouteStatusAction = "drop_off" | "pickup" | "reset_drop_off" | "reset_pickup";
+
+/**
+ * "drop_off"/"pickup" are open to any session (this is the one write an
+ * employee is allowed to make); "reset_drop_off"/"reset_pickup" are
+ * manager-only and rejected server-side otherwise.
+ */
+export async function updateBookingRouteStatus(bookingId: string, action: RouteStatusAction): Promise<void> {
+  await callApi(`/api/bookings/${bookingId}/route-status`, "PATCH", { action });
 }

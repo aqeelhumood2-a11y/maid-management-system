@@ -76,6 +76,7 @@ export function TodaySchedule() {
           open
           onClose={() => setSelection(null)}
           worker={selection.worker}
+          workers={workers}
           date={today}
           shift={selection.shift}
           resolution={selection.resolution}

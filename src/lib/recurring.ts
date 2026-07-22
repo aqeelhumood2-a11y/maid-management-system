@@ -1,4 +1,4 @@
-import { ApiError, type EditableBookingFields, type PaymentPatch } from "./booking";
+import { ApiError, type EditableBookingFields, type PaymentPatch, type RouteStatusAction } from "./booking";
 import type { RecurringSchedule, Shift } from "./types";
 
 /**
@@ -85,6 +85,21 @@ export async function setRecurringOccurrencePayment(input: SetRecurringOccurrenc
   await callApi(
     `/api/recurring/${input.recurring.id}/payment`,
     { recurring: input.recurring, date: input.date, ...input.payment },
+    "PATCH"
+  );
+}
+
+export interface SetRecurringOccurrenceRouteStatusInput {
+  recurring: RecurringSchedule;
+  date: string;
+  action: RouteStatusAction;
+}
+
+/** Open to any session for "drop_off"/"pickup"; the server rejects the reset actions for a non-manager. */
+export async function setRecurringOccurrenceRouteStatus(input: SetRecurringOccurrenceRouteStatusInput): Promise<void> {
+  await callApi(
+    `/api/recurring/${input.recurring.id}/route-status`,
+    { recurring: input.recurring, date: input.date, action: input.action },
     "PATCH"
   );
 }

@@ -100,6 +100,7 @@ export function WeeklySchedule() {
           open
           onClose={() => setSelection(null)}
           worker={selection.worker}
+          workers={workers}
           date={selection.date}
           shift={selection.shift}
           resolution={selection.resolution}

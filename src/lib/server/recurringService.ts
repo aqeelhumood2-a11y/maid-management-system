@@ -3,13 +3,15 @@ import { addDaysToDateStr } from "../date";
 import type { Booking, RecurringSchedule, Shift } from "../types";
 import {
   cancelBookingServer,
-  createBookingServer,
+  materializeOccurrenceBookingServer,
   ServiceError,
   updateBookingPaymentServer,
+  updateBookingRouteStatusServer,
   updateBookingServer,
   type Actor,
   type BookingPatch,
   type PaymentPatch,
+  type RouteStatusAction,
 } from "./bookingService";
 
 /**
@@ -159,7 +161,7 @@ export async function editRecurringOccurrenceServer(
     if (existing) {
       await updateBookingServer(db, existing.id, fields, actor);
     } else {
-      await createBookingServer(
+      await materializeOccurrenceBookingServer(
         db,
         {
           date,
@@ -279,7 +281,7 @@ export async function setRecurringOccurrencePaymentServer(
   const existing = await findMaterializedBooking(db, recurring.id, date);
   const bookingId = existing
     ? existing.id
-    : await createBookingServer(
+    : await materializeOccurrenceBookingServer(
         db,
         {
           date,
@@ -299,6 +301,53 @@ export async function setRecurringOccurrencePaymentServer(
       );
 
   await updateBookingPaymentServer(db, bookingId, payment, actor);
+}
+
+export interface SetRecurringOccurrenceRouteStatusInput {
+  recurring: RecurringSchedule;
+  date: string;
+  action: RouteStatusAction;
+}
+
+/**
+ * Sets the transport status for one specific occurrence of a recurring
+ * schedule, materializing it first if no concrete Booking exists yet for
+ * that date — exactly like setRecurringOccurrencePaymentServer. Unlike that
+ * function, this one is NOT manager-only: "drop_off"/"pickup" are the one
+ * write an employee is allowed to make anywhere in the app, so this must
+ * stay reachable from an employee session. `updateBookingRouteStatusServer`
+ * itself still enforces the manager-only reset actions.
+ */
+export async function setRecurringOccurrenceRouteStatusServer(
+  db: Firestore,
+  input: SetRecurringOccurrenceRouteStatusInput,
+  actor: Actor
+): Promise<void> {
+  const { recurring, date, action } = input;
+
+  const existing = await findMaterializedBooking(db, recurring.id, date);
+  const bookingId = existing
+    ? existing.id
+    : await materializeOccurrenceBookingServer(
+        db,
+        {
+          date,
+          shift: recurring.shift,
+          workerId: recurring.workerId,
+          workerName: recurring.workerName,
+          areaId: recurring.areaId,
+          areaName: recurring.areaName,
+          hours: recurring.hours,
+          amount: recurring.amount,
+          customerPhone: recurring.customerPhone,
+          customerLocation: recurring.customerLocation,
+          source: "recurring",
+          recurringSeriesId: recurring.id,
+        },
+        actor
+      );
+
+  await updateBookingRouteStatusServer(db, bookingId, action, actor);
 }
 
 export type RecurringCancelScope = "single" | "forward";

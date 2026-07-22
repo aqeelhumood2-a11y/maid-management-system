@@ -4,6 +4,8 @@ import { PaymentSummaryCard } from "@/components/dashboard/PaymentSummaryCard";
 const SECTIONS = [
   { href: "/manager/future-booking", label: "حجز مستقبلي", desc: "إنشاء حجز بتاريخ مستقبلي محدد", icon: "📅" },
   { href: "/manager/workers", label: "إدارة العاملات", desc: "إضافة وتعديل وتفعيل العاملات", icon: "👥" },
+  { href: "/manager/weekly", label: "الجدول الأسبوعي", desc: "عرض جميع العاملات خلال الأسبوع", icon: "📆" },
+  { href: "/manager/weekly-grid", label: "شبكة الحجز الأسبوعية", desc: "حجز أسبوع كامل لعاملة واحدة من شاشة واحدة", icon: "🧩" },
   { href: "/manager/recurring", label: "الجدول المتكرر", desc: "مواعيد أسبوعية متكررة", icon: "🔁" },
   { href: "/manager/routes", label: "خطوط السير", desc: "حجوزات يوم محدد حسب المنطقة", icon: "🗺️" },
   { href: "/manager/reports", label: "التقارير", desc: "تحليل الحجوزات والإيرادات", icon: "📊" },

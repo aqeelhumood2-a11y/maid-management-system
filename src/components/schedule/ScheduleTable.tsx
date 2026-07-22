@@ -55,6 +55,13 @@ export function ScheduleTable({
   bookings: Booking[];
   recurringSchedules: RecurringSchedule[];
   exceptions: RecurringException[];
+  /**
+   * Called only for cells the current session is allowed to act on: a
+   * manager may click any available or booked cell (create or view/edit),
+   * an employee may only click a booked cell to view its read-only details
+   * — available cells are never clickable for an employee, since booking
+   * creation is manager-only.
+   */
   onCellClick: (worker: Worker, date: string, shift: Shift, resolution: CellResolution) => void;
 }) {
   const today = todayBahrain();
@@ -125,7 +132,9 @@ export function ScheduleTable({
                         recurringSchedules,
                         exceptions
                       );
-                      const clickable = resolution.status === "available" || resolution.status === "booked";
+                      const clickable = isManager
+                        ? resolution.status === "available" || resolution.status === "booked"
+                        : resolution.status === "booked";
                       const isPaid = resolution.status === "booked" && (resolution.booking?.paid ?? false);
                       return (
                         <td
@@ -137,7 +146,9 @@ export function ScheduleTable({
                             disabled={!clickable}
                             onClick={() => clickable && onCellClick(worker, date, shift, resolution)}
                             title={cellLabel(resolution)}
-                            className={`relative flex h-11 w-full min-w-16 items-center justify-center truncate rounded-lg px-1.5 text-xs font-medium transition-colors ${CELL_STYLES[resolution.status]}`}
+                            className={`relative flex h-11 w-full min-w-16 items-center justify-center truncate rounded-lg px-1.5 text-xs font-medium transition-colors ${
+                              clickable ? CELL_STYLES[resolution.status] : CELL_STYLES[resolution.status].replace(/hover:\S+|cursor-pointer/g, "cursor-default")
+                            }`}
                           >
                             {cellLabel(resolution)}
                             {isManager && resolution.status === "booked" && (

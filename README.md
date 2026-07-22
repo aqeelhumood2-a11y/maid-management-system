@@ -7,18 +7,27 @@ schedule backed by Cloud Firestore.
 ## System overview
 
 The root URL is the **Employee screen** — no login, no account, nothing to
-enter. Anyone who opens the site sees the live schedule immediately:
+enter. Anyone who opens the site sees the live schedule immediately, scoped
+to exactly two read-mostly screens (see **Employee and Manager
+permissions**):
 
-- **Today Schedule** and **Weekly Schedule**, a color-coded grid
-  (green/red/yellow/gray) of every active worker × morning/afternoon shift.
-  Clicking an available cell opens a quick booking form; clicking a booked
-  cell opens details with edit/cancel.
+- **Daily Schedule**, a color-coded grid (green/red/yellow/gray) of every
+  active worker × morning/afternoon shift, read-only for an employee session
+  — clicking a booked cell shows a read-only detail view (area, customer
+  phone/location, duration); clicking an available cell does nothing, since
+  booking creation is manager-only now.
+- **Route Schedule**, a same-day operational view (worker, area, phone,
+  location, duration, drop-off/pickup times, status) with exactly two
+  buttons an employee can press: "تم التنزيل" (dropped off) and "تم
+  الاستلام" (picked up).
 - A small, unobtrusive **⚙︎** button in the header opens a manager password
-  prompt. The correct password opens the **Manager** section: Future
-  Booking, Worker Management, Recurring Weekly Schedule, Routes, Reports,
-  Payments, Financial Settlement, Activity History and Settings. A wrong
-  password just shows an inline error — the visitor stays on the Employee
-  screen.
+  prompt. The correct password opens the **Manager** section: Daily
+  Schedule, Weekly Schedule, Weekly Booking Grid, Future Booking, Worker
+  Management, Recurring Weekly Schedule, Routes, Reports, Payments,
+  Financial Settlement, Activity History and Settings — full booking
+  create/edit/cancel, payment, and route-status reset, none of which an
+  employee session can reach. A wrong password just shows an inline error —
+  the visitor stays on the Employee screen.
 
 There is no Firebase Authentication anywhere in this app, and no concept of
 individual employee or manager accounts. "Employee" access is simply
@@ -199,18 +208,20 @@ npm start
 
 ## Access model
 
-- **Employee** (anyone with the URL) — Today Schedule, Weekly Schedule. Can
-  create/edit/cancel plain bookings from those two screens. Cannot reach
-  `/manager/*` (blocked by Proxy and by the manager layout's server-side
-  session check) and cannot create/move a booking onto a Friday date.
+- **Employee** (anyone with the URL) — Daily Schedule (`/`, read-only) and
+  Route Schedule (`/routes`). No booking create/edit/cancel, no payment
+  anywhere, no Weekly Schedule. The one write an employee session can make
+  anywhere in the app is marking a booking's route status (drop-off/pickup)
+  on the Route Schedule. Cannot reach `/manager/*` (blocked by Proxy and by
+  the manager layout's server-side session check).
 - **Manager** (the shared password) — everything an employee has, plus the
-  full `/manager` section: Future Booking (manual date selection + Friday
-  override), Worker Management, Recurring Weekly Schedule, Routes, Reports,
-  Payments (mark/edit/revert paid status, filter by All/Paid/Unpaid/Cash/
-  BenefitPay), Financial Settlement (worker payouts, Manager Net, PDF/Excel
-  export), Activity History, Settings (business name, areas). Payment and
-  financial data — on the schedule grid, in Reports, and via the Payments
-  and Financial Settlement pages — is visible to a manager session only;
+  full `/manager` section: Daily/Weekly Schedule with full create/edit/
+  cancel, the Weekly Booking Grid, Future Booking (manual date selection +
+  Friday override), Worker Management, Recurring Weekly Schedule, Routes,
+  Reports, Payments (mark/edit/revert paid status, filter by All/Paid/
+  Unpaid/Cash/BenefitPay), Financial Settlement (worker payouts, Manager
+  Net, PDF/Excel export), Activity History, Settings (business name, areas).
+  Payment, pricing and financial data are visible to a manager session only;
   see **Manager Payment Tracking** and **Manager Financial Settlement**.
 
 Since there are no individual accounts anymore, every action's audit trail
@@ -219,20 +230,74 @@ attributed to one of two fixed identities — `"employee"` / `"موظف"` or
 `"manager"` / `"المدير"` — rather than a named person. This is an intentional
 consequence of removing per-user login, not an oversight.
 
+## Employee and Manager permissions
+
+Booking management (create/edit/cancel/move/change-worker) and payment are
+now manager-only end to end, not just hidden in the employee UI. This is
+enforced identically to every other manager-only capability in this app —
+in the trusted server layer, independent of the route or the client:
+
+- **`createBookingServer`, `updateBookingServer`, `cancelBookingServer`**
+  (`src/lib/server/bookingService.ts`) all call `requireManager(actor)` as
+  their first line — an employee `Actor` is rejected with `FORBIDDEN`
+  before any Firestore read, regardless of what route called them or what
+  the request body contains.
+- **`POST /api/bookings`, `PATCH /api/bookings/[id]`,
+  `POST /api/bookings/[id]/cancel`** additionally check
+  `isManagerSession()` at the route level and return `401` immediately —
+  the same defense-in-depth pattern (route check *and* service check) this
+  app has used for payment/financial routes since those modules shipped.
+- **`PATCH /api/bookings/[id]` now also accepts `date`/`shift`/`workerId`/
+  `workerName`** when present in the body ("Edit booking date" / "Change
+  worker"), forwarding to the "move" primitive `updateBookingServer` already
+  supported internally (previously only reachable from recurring-schedule
+  materialization, never exposed to a manager directly). `EditForm` in
+  `BookingDetailsModal` now offers both fields for a plain (non-recurring)
+  booking.
+- **`GET /api/bookings` redacts the booking `amount` for a non-manager
+  session**, the same way it already redacted every payment field —
+  `redactEmployeeRestrictedFields` (`src/lib/server/bookingService.ts`)
+  composes `redactPaymentFields` with zeroing `amount`, since the approved
+  employee permissions list what an employee may view (booking, area,
+  customer phone/location, duration, route status) and pricing isn't on it.
+- **`ScheduleTable`** only calls `onCellClick` for a booked cell when the
+  session isn't a manager — an employee can never open the "create a
+  booking" form on an available cell. `BookingDetailsModal`'s Edit/Cancel
+  buttons, and the amount field in its read-only view, are gated on
+  `isManager` with no exception (a plain non-recurring booking used to be
+  editable by whoever created it; it no longer is).
+- **Weekly Schedule moved from a public `/weekly` route to `/manager/weekly`**
+  — it gets the same server-side session gate every other manager page has
+  (`src/app/manager/layout.tsx`) instead of a bespoke check, and
+  `EmployeeShell`'s nav only lists Daily Schedule and Route Schedule for a
+  non-manager session (it still shows "الأسبوع" for a manager, purely as a
+  navigation convenience — the actual gate is the route, not the nav list).
+- **Route status (drop-off/pickup) is the one exception** to "employees
+  can't write anything": `updateBookingRouteStatusServer` allows any valid
+  actor for `drop_off`/`pickup`, but still calls `requireManager` for
+  `reset_drop_off`/`reset_pickup` ("Manager can: Reset drop-off, Reset
+  pickup"). See **Route Schedule** below.
+
 ## Main workflows
 
-- **Booking a shift**: click a green cell → fill area/hours/amount →
+- **Booking a shift (manager only)**: on Daily/Weekly Schedule or the Weekly
+  Booking Grid, click a green cell → fill area/hours/amount →
   saved atomically with a slot lock (see below). No payment is collected or
   asked for at booking time — see **Manager Payment Tracking**.
 - **Recurring schedule**: manager defines a weekly pattern (worker, area, shift,
-  day-of-week ≠ Friday, hours/amount). Editing or cancelling requires
-  choosing a scope — this occurrence only / from this date onward / entire
-  schedule (edit) or this date only / from this date onward (cancel) — matching
-  the Arabic labels specified in the brief.
-- **Payments**: manager marks a booking (or a specific occurrence of a
-  recurring schedule) paid, selecting Benefit/Cash and an amount; payment date
-  and recorder are recorded automatically. See **Manager Payment Tracking**.
-- **Routes**: manager picks a date + shift and gets a copyable/callable list of
+  day-of-week ≠ Friday, hours/amount) starting on any date — previous,
+  current, or future (see **Weekly Booking Grid** below). Editing or
+  cancelling requires choosing a scope — this occurrence only / from this
+  date onward / entire schedule (edit) or this date only / from this date
+  onward (cancel) — matching the Arabic labels specified in the brief.
+- **Payments (manager only)**: manager marks a booking (or a specific
+  occurrence of a recurring schedule) paid, selecting Benefit/Cash and an
+  amount; payment date and recorder are recorded automatically. See
+  **Manager Payment Tracking**.
+- **Route Schedule**: whoever is on the ground (employee or manager) marks a
+  booking dropped off, then picked up, from one same-day list. See **Route
+  Schedule** below.
+- **Routes (manager)**: manager picks a date + shift and gets a copyable/callable list of
   worker → area → customer phone/location for active bookings only.
 
 ## Manager Payment Tracking
@@ -284,11 +349,11 @@ whenever and however they choose.
   filterable Payments listing) all `401` immediately for a non-manager
   session, before touching Firestore.
 - **Employees never see payment data, on any route** — not just hidden in the
-  UI. `GET /api/bookings` is the same endpoint the Employee Today/Weekly
-  schedule polls, so instead of a second endpoint, that route's response is
-  redacted server-side for non-manager sessions: `redactPaymentFields`
-  (`src/lib/server/bookingService.ts`) nulls out every payment field before
-  the JSON is ever serialized, unit-tested directly in
+  UI. `GET /api/bookings` is the same endpoint the employee Daily Schedule
+  and Route Schedule poll, so instead of a second endpoint, that route's
+  response is redacted server-side for non-manager sessions:
+  `redactPaymentFields` (`src/lib/server/bookingService.ts`) nulls out every
+  payment field before the JSON is ever serialized, unit-tested directly in
   `tests/unit/paymentSecurity.test.ts`. The manager-only Payments listing
   (`/api/bookings/payments`) and the Reports/Payments pages are separate
   routes that skip the redaction for a verified manager session.
@@ -383,17 +448,108 @@ booking. All of the logic lives in `src/lib/server/financialSummary.ts`.
   data mutation, same spirit as the rest of this app's append-only audit
   trail.
 
+## Route Schedule
+
+`/routes` (open to both roles, `src/components/schedule/RouteSchedule.tsx`)
+tracks the physical drop-off/pickup of each booking for a chosen date,
+independent of payment or booking management entirely — it's the one screen
+an employee session can write to.
+
+- **Fields shown, exactly the approved list**: worker, area, phone,
+  location, duration, drop-off time, planned pickup, actual pickup, status.
+  Nothing about payment or the booking amount ever appears here — it
+  couldn't: `GET /api/bookings` already strips those fields for a
+  non-manager session before the page's data even exists in the browser.
+- **`dropOffAt`/`pickupAt`** are two new nullable Timestamp fields on
+  `Booking` (`src/lib/types.ts`), both `null` at creation, set only via
+  `updateBookingRouteStatusServer` (`src/lib/server/bookingService.ts`) — the
+  only function that ever touches them. "Planned pickup" isn't a stored
+  field at all; it's computed client-side as `dropOffAt + hours` once a
+  drop-off is recorded, so it only ever appears after that.
+- **Status** is derived, not stored: no `dropOffAt` → "بانتظار التنزيل"; a
+  `dropOffAt` with no `pickupAt` → "تم التنزيل — بانتظار الاستلام"; a
+  `pickupAt` → "تم الاستلام".
+- **"تم التنزيل" (`drop_off`) and "تم الاستلام" (`pickup`) are open to any
+  valid actor** — the one write capability an employee session has anywhere
+  in this app. Pickup is rejected unless a drop-off is already recorded, and
+  each action can only happen once (rejects if already set), so the two
+  timestamps can never end up in the wrong order or overwritten silently.
+- **"إعادة تعيين التنزيل"/"إعادة تعيين الاستلام" (`reset_drop_off`/
+  `reset_pickup`) are manager-only** ("Manager can: Reset drop-off, Reset
+  pickup") — `updateBookingRouteStatusServer` calls `requireManager` for
+  just those two actions, rejecting an employee actor with `FORBIDDEN`.
+  Resetting drop-off also clears pickup with it, since a pickup can't
+  logically survive an undone drop-off.
+- **Recurring occurrences materialize on first route-status write**, exactly
+  like payment does — `setRecurringOccurrenceRouteStatusServer`
+  (`src/lib/server/recurringService.ts`) creates the concrete `Booking` for
+  that date if one doesn't exist yet, via `materializeOccurrenceBookingServer`
+  (a manager-check-free variant of booking creation used only for this and
+  the equivalent payment/edit materialization paths — see **Employee and
+  Manager permissions**), then calls `updateBookingRouteStatusServer` on it.
+  This has to stay reachable by an employee actor, which is exactly why it's
+  a separate function from the public, manager-only `createBookingServer`.
+- Every transition is logged (`route_dropped_off`, `route_picked_up`,
+  `route_dropoff_reset`, `route_pickup_reset`) to `activityLogs`.
+
+## Weekly Booking Grid
+
+`/manager/weekly-grid` (manager-only) is the fast path for filling a
+worker's whole week instead of creating each day's booking one at a time
+from a different screen.
+
+- **Workflow**: pick a worker, pick any date (no minimum — see **Booking
+  dates**) → the page computes `weekStart()`/`weekDates()` for that date
+  (the existing Bahrain Sat–Fri work-week helpers) and renders the exact
+  same `ScheduleTable` component Daily/Weekly Schedule use, scoped to that
+  one worker across all 7 dates. Each day shows two cells (morning,
+  afternoon) exactly like everywhere else in the app.
+- **Every cell reuses the literal same booking form as everywhere else** —
+  `QuickBookingModal` for an empty cell, `BookingDetailsModal` for a booked
+  one (with its full existing-booking and existing-recurring-booking options:
+  edit, cancel, single/forward/entire scope, and payment, all already
+  manager-gated). This is a deliberate architectural choice: rather than
+  building a second, parallel booking-mutation code path that would have to
+  independently re-implement slot-locking, the Friday restriction and
+  payment validation, the grid is a thin worker/week-scoped view over
+  components and server functions that already exist and are already
+  tested. Each cell saves immediately on its own form submit, the same way
+  every booking action in this app always has — there is no separate
+  "stage the whole week, then commit as one batch" step, since that would
+  mean either reimplementing per-booking transactional safety for a batch of
+  up to 14 documents, or silently losing that safety, and requirement #9
+  explicitly asks to keep the existing architecture rather than replace it.
+  What the page actually solves — "no need to create each day separately" —
+  is not having to navigate to a different date to see and fill every slot
+  for that worker; the whole week is one screen.
+- **Weekly editing (requirement #7)** falls out of what already exists,
+  with no new code: "edit one day only" is `RecurringEditForm`'s existing
+  `single` scope; "edit the whole recurring schedule" is its existing
+  `entire` scope; "apply changes to future recurring weeks" is its existing
+  `forward` scope; "edit the selected week" is simply being on that week's
+  grid and clicking whichever cells need changing.
+
+## Booking dates
+
+Recurring schedules are not forced to start today — `AddRecurringModal`
+(`/manager/recurring`) no longer has a `min` on its start-date input, and
+`createRecurringScheduleServer` never validated one server-side either,
+so a manager can pick a start date in the past, today, or the future; the
+Weekly Booking Grid's date picker has no minimum either, and always resolves
+to the Sat–Fri week containing whatever date is chosen.
+
 ## Database design (Firestore collections)
 
 - `workers/{id}` — `name, phone, active, createdAt/By, updatedAt/By`
 - `areas/{id}` — `name, active, createdAt/By, updatedAt/By`
 - `bookings/{id}` — full booking record (date `yyyy-MM-dd`, shift, worker/area id
   + name snapshot, hours, amount, `paid`, `paymentMethod`, `paidAmount`,
-  `paymentDate`, `paymentBy`, customerPhone/Location, source,
-  recurringSeriesId, status, cancellation metadata, createdBy/At, updatedBy/At).
-  Payment fields always start `false`/`null` at creation and are only ever
-  set afterward via `updateBookingPaymentServer` — see **Manager Payment
-  Tracking**.
+  `paymentDate`, `paymentBy`, `dropOffAt`, `pickupAt`, customerPhone/Location,
+  source, recurringSeriesId, status, cancellation metadata, createdBy/At,
+  updatedBy/At). Payment and route-status fields all start `false`/`null` at
+  creation and are only ever set afterward via `updateBookingPaymentServer` /
+  `updateBookingRouteStatusServer` — see **Manager Payment Tracking** and
+  **Route Schedule**.
 - `slots/{workerId_date_shift}` — the double-booking lock document (see below)
 - `recurringSchedules/{id}` — the weekly pattern (worker/area/shift/dayOfWeek,
   hours/amount, startDate, endDate, status, `replacesId` for "edit from
@@ -468,49 +624,60 @@ ever pre-generating every future week's bookings.
 - Every write re-validates its own fields server-side (shift enum, positive
   hours/amount, date shape, payment-method enum + non-negative amount when
   marking paid) — nothing trusts client-side form validation.
-- Payment mutations are manager-only, enforced by `requireManager` inside
-  the trusted server layer itself (not just at the route level) — see
-  **Manager Payment Tracking**.
+- Booking create/edit/cancel and payment mutations are manager-only,
+  enforced by `requireManager` inside the trusted server layer itself (not
+  just at the route level) — see **Employee and Manager permissions** and
+  **Manager Payment Tracking**. Route status (drop-off/pickup) is the
+  narrow, explicitly-approved exception, and even it keeps its two reset
+  actions manager-only the same way.
+- `GET /api/bookings` — the one read endpoint an employee session can reach
+  for schedule data — redacts every payment field and the booking amount
+  for a non-manager session before the response is ever serialized
+  (`redactEmployeeRestrictedFields`), not just hidden client-side.
 - `activityLogs` is append-only and manager-read-only
   (`GET /api/activity`) — no route ever updates or deletes an entry.
 
 ## Implemented employee features
 
-Today Schedule and Weekly Schedule (with previous/current/next week
-navigation), quick booking on an available cell (area/hours/amount only —
-worker/date/shift are implicit, no payment step), booking details with
-edit/cancel on a booked cell, Friday shown as a fixed holiday everywhere. None
-of this requires any credential, and none of it ever exposes payment data.
+Daily Schedule (read-only: view booking, area, customer phone/location,
+duration — never amount or payment) and Route Schedule (worker, area,
+phone, location, duration, drop-off/pickup times and status, with "تم
+التنزيل"/"تم الاستلام" buttons). No booking creation, editing, cancellation,
+or payment of any kind — see **Employee and Manager permissions**. Friday
+shown as a fixed holiday everywhere. None of this requires any credential.
 
 ## Implemented manager features
 
-Future Booking (manual date + Friday-holiday override with explicit
-confirmation), Worker Management (add/edit/activate/deactivate, history
-preserved), Recurring Weekly Schedule (create + 3-way edit scope + 2-way cancel
-scope), Routes (date+shift → worker/area/phone/location, active bookings only,
-tap-to-call), Reports (worker/area/date/date-range/week/month/paid/payment
-method/shift filters with totals and a reset button), Payments (mark
-paid/edit/revert with method + amount + audit trail, filter by All/Paid/
-Unpaid/Cash/BenefitPay), Dashboard Payment Summary (unpaid/paid-today/
-paid-this-week/cash/benefit/grand totals), Financial Settlement (per-worker
-completed/paid/earnings with daily/weekly/monthly breakdowns, Workers
-Total, Overall Total, Manager Net, Today/Week/Month/custom-range filters,
-PDF and Excel export), Activity History (filterable, immutable, including
-payment- and settlement-specific action types), Settings (business name,
-area CRUD).
+Daily/Weekly Schedule with full create/edit/cancel (including "Edit booking
+date" and "Change worker"), the Weekly Booking Grid (fill a worker's whole
+week from one screen), Future Booking (manual date + Friday-holiday
+override with explicit confirmation), Worker Management (add/edit/activate/
+deactivate, history preserved), Recurring Weekly Schedule (create with any
+start date + 3-way edit scope + 2-way cancel scope), Routes (date+shift →
+worker/area/phone/location, active bookings only, tap-to-call), Route
+Schedule reset controls (undo a drop-off/pickup), Reports (worker/area/
+date/date-range/week/month/paid/payment method/shift filters with totals
+and a reset button), Payments (mark paid/edit/revert with method + amount +
+audit trail, filter by All/Paid/Unpaid/Cash/BenefitPay), Dashboard Payment
+Summary (unpaid/paid-today/paid-this-week/cash/benefit/grand totals),
+Financial Settlement (per-worker completed/paid/earnings with daily/weekly/
+monthly breakdowns, Workers Total, Overall Total, Manager Net, Today/Week/
+Month/custom-range filters, PDF and Excel export), Activity History
+(filterable, immutable, including payment-, settlement- and route-status-
+specific action types), Settings (business name, area CRUD).
 
 ## Tests and exact results
 
 ```
-npm run test           → 7 files, 56 tests passed  (date / availability / recurring pure
+npm run test           → 7 files, 58 tests passed  (date / availability / recurring pure
                           logic, managerAuth password/session-token, scheduleCellLabel,
-                          payment-redaction security, and financial-settlement payout-formula
-                          unit tests)
-npm run test:emulator  → 4 files, 78 tests passed  (Firestore deny-all rules for every
-                          collection, server booking/recurring/payment/financial-settlement
-                          transaction tests, and server catalog (areas/workers/settings)
-                          tests — run against the Firebase Emulator Suite via
-                          `firebase emulators:exec`)
+                          payment- and amount-redaction security, and financial-settlement
+                          payout-formula unit tests)
+npm run test:emulator  → 4 files, 89 tests passed  (Firestore deny-all rules for every
+                          collection, server booking/recurring/payment/route-status/
+                          financial-settlement transaction tests, and server catalog
+                          (areas/workers/settings) tests — run against the Firebase
+                          Emulator Suite via `firebase emulators:exec`)
 npm run lint            → 0 problems
 npm run typecheck       → 0 errors
 npm run build           → succeeds (Turbopack production build)
@@ -533,8 +700,23 @@ original payment date across a method/amount edit while staying paid,
 clearing all payment fields on revert, the exact activity-log action logged
 for each transition, per-occurrence payment independence for recurring
 schedules (paying one date never touches another), and — as a unit-level
-security regression guard — that `redactPaymentFields` strips every payment
-field from a booking before it can reach a non-manager session.
+security regression guard — that `redactPaymentFields`/
+`redactEmployeeRestrictedFields` strip every payment field (and, for the
+latter, the amount) from a booking before it can reach a non-manager
+session.
+
+Employee/Manager permissions and Route Schedule coverage: booking create/
+edit/cancel rejecting an employee actor unconditionally (including on
+Friday, where it used to be allowed) while a manager still succeeds on both
+a weekday and Friday, "Change worker" moving a booking's slot lock
+correctly, `materializeOccurrenceBookingServer` still enforcing the Friday
+restriction as defense in depth, an employee marking drop-off then pickup
+(and being rejected for a duplicate or out-of-order action), an employee
+being rejected for either reset action while a manager succeeds (resetting
+drop-off also clearing pickup), a not-yet-materialized recurring
+occurrence's route status materializing exactly one booking for an employee
+actor without affecting other dates, and a recurring schedule accepting a
+start date a year in the past.
 
 Financial Settlement coverage: the payout formula for 0–6 completed+paid
 bookings in a single day (`computeDailyPayout`), correct per-worker/per-day
@@ -571,3 +753,14 @@ manager-only rejection of `getFinancialSummaryServer`, and the
   worker/area names render correctly (see **Manager Financial Settlement**),
   at the cost of a larger file size and non-selectable text. The Excel
   export has neither limitation.
+- The Weekly Booking Grid saves each cell immediately on that cell's own
+  form submit, the same as every other booking action in this app, rather
+  than staging the whole week and committing it as one batch on a page-level
+  "Save" — see **Weekly Booking Grid** for the reasoning (reusing the
+  existing, already-tested per-booking mutation path instead of building a
+  second one). A manager filling several cells still never has to leave the
+  page or pick a different date to do it.
+- "Planned pickup" on the Route Schedule is a client-side estimate
+  (drop-off time + duration), not a value the manager can set independently
+  — there's no separate "expected pickup time" input anywhere in the
+  approved feature list to capture one.

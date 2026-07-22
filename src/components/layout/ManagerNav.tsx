@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 const ITEMS = [
   { href: "/manager/future-booking", label: "حجز مستقبلي" },
   { href: "/manager/workers", label: "العاملات" },
+  { href: "/manager/weekly", label: "الجدول الأسبوعي" },
+  { href: "/manager/weekly-grid", label: "شبكة الحجز الأسبوعية" },
   { href: "/manager/recurring", label: "الجدول المتكرر" },
   { href: "/manager/routes", label: "خطوط السير" },
   { href: "/manager/reports", label: "التقارير" },

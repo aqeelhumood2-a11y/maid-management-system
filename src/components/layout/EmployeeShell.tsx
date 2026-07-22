@@ -9,10 +9,19 @@ import { ErrorBanner } from "@/components/ui/Feedback";
 import { TextInput } from "@/components/ui/Field";
 import { useManagerSession } from "@/context/ManagerSessionContext";
 
-const NAV_ITEMS = [
+/**
+ * Employee access is limited to exactly two screens — Daily Schedule and
+ * Route Schedule (see requirement #1). Weekly Schedule moved under
+ * /manager/weekly and only shows up here for a manager session, purely for
+ * navigation convenience; the actual access control is the manager-only
+ * server-side gate on that route, not this list.
+ */
+const EMPLOYEE_NAV_ITEMS = [
   { href: "/", label: "اليوم" },
-  { href: "/weekly", label: "الأسبوع" },
+  { href: "/routes", label: "خط السير" },
 ];
+
+const MANAGER_EXTRA_NAV_ITEMS = [{ href: "/manager/weekly", label: "الأسبوع" }];
 
 export function EmployeeShell({
   businessName,
@@ -24,6 +33,7 @@ export function EmployeeShell({
   const pathname = usePathname();
   const { isManager } = useManagerSession();
   const [loginOpen, setLoginOpen] = useState(false);
+  const navItems = isManager ? [...EMPLOYEE_NAV_ITEMS, ...MANAGER_EXTRA_NAV_ITEMS] : EMPLOYEE_NAV_ITEMS;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -48,7 +58,7 @@ export function EmployeeShell({
           )}
         </div>
         <nav className="mx-auto flex max-w-5xl gap-1 overflow-x-auto px-4 pb-2">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}

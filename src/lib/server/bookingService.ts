@@ -132,6 +132,18 @@ export function redactPaymentFields(booking: Booking): Booking {
   };
 }
 
+/**
+ * The full set of fields GET /api/bookings hides from a non-manager session:
+ * every payment field (via redactPaymentFields) plus the agreed service
+ * amount itself — the approved employee permissions list what an employee
+ * may view (booking, area, customer phone/location, duration, route status)
+ * and amount isn't on it, so it's treated the same as payment information
+ * rather than left visible by omission.
+ */
+export function redactEmployeeRestrictedFields(booking: Booking): Booking {
+  return { ...redactPaymentFields(booking), amount: 0 };
+}
+
 function logActivity(
   tx: Transaction,
   db: Firestore,
@@ -182,12 +194,16 @@ export interface CreateBookingInput {
  */
 const VALID_SOURCES: BookingSource[] = ["today", "weekly", "manager_future", "recurring"];
 
-export async function createBookingServer(
-  db: Firestore,
-  input: CreateBookingInput,
-  actor: Actor
-): Promise<string> {
-  assertActive(actor);
+/**
+ * The actual creation logic, with no authorization check of its own — every
+ * caller is responsible for checking the actor first. There are exactly two
+ * legitimate callers: `createBookingServer` (the public, manager-only entry
+ * point) and `materializeOccurrenceBookingServer` (used only by
+ * recurringService.ts to realize a not-yet-materialized recurring occurrence
+ * into a concrete document, which must stay reachable by an employee marking
+ * a drop-off/pickup — see updateBookingRouteStatusServer).
+ */
+async function createBookingCore(db: Firestore, input: CreateBookingInput, actor: Actor): Promise<string> {
   validateBookingFields(input);
   if (!VALID_SOURCES.includes(input.source)) {
     throw new ServiceError("مصدر الحجز غير صالح", "VALIDATION", 400);
@@ -222,6 +238,10 @@ export async function createBookingServer(
       paidAmount: null,
       paymentDate: null,
       paymentBy: null,
+      // Route (transport) status is likewise always unset at creation — see
+      // updateBookingRouteStatusServer below.
+      dropOffAt: null,
+      pickupAt: null,
       customerPhone: input.customerPhone,
       customerLocation: input.customerLocation,
       source: input.source,
@@ -259,6 +279,34 @@ export async function createBookingServer(
   return bookingRef.id;
 }
 
+/** Manager only — booking creation is no longer available to employees at all. */
+export async function createBookingServer(
+  db: Firestore,
+  input: CreateBookingInput,
+  actor: Actor
+): Promise<string> {
+  requireManager(actor);
+  return createBookingCore(db, input, actor);
+}
+
+/**
+ * Used only by recurringService.ts to materialize a recurring occurrence
+ * that hasn't been turned into a concrete Booking yet. Deliberately does NOT
+ * require a manager: the "single scope edit" and "payment" materialization
+ * paths are already gated by their own `requireManager` check before they
+ * ever reach here, but marking a drop-off/pickup — an employee-permitted
+ * action — must be able to materialize the occurrence too, since there is
+ * nothing else that would create the booking on their behalf otherwise.
+ */
+export async function materializeOccurrenceBookingServer(
+  db: Firestore,
+  input: CreateBookingInput,
+  actor: Actor
+): Promise<string> {
+  assertActive(actor);
+  return createBookingCore(db, input, actor);
+}
+
 /**
  * Non-slot, non-payment fields (area/hours/amount/customer info).
  * `date`/`shift`/`workerId` are accepted here purely as a trusted,
@@ -282,13 +330,14 @@ export interface BookingPatch {
   workerName?: string;
 }
 
+/** Manager only — editing a booking (including "move" to a different date/shift/worker) is no longer available to employees. */
 export async function updateBookingServer(
   db: Firestore,
   bookingId: string,
   patch: BookingPatch,
   actor: Actor
 ): Promise<void> {
-  assertActive(actor);
+  requireManager(actor);
   validateBookingFields(patch);
   const bookingRef = db.collection("bookings").doc(bookingId);
 
@@ -361,7 +410,7 @@ export async function updateBookingServer(
   });
 }
 
-/** Cancels a concrete booking and releases its slot lock. */
+/** Manager only — cancelling a booking is no longer available to employees. Releases the slot lock. */
 export async function cancelBookingServer(
   db: Firestore,
   bookingId: string,
@@ -371,7 +420,7 @@ export async function cancelBookingServer(
   },
   actor: Actor
 ): Promise<void> {
-  assertActive(actor);
+  requireManager(actor);
   const bookingRef = db.collection("bookings").doc(bookingId);
 
   await db.runTransaction(async (tx) => {
@@ -504,5 +553,69 @@ export async function updateBookingPaymentServer(
         after: { ...before, ...after },
       });
     }
+  });
+}
+
+export type RouteStatusAction = "drop_off" | "pickup" | "reset_drop_off" | "reset_pickup";
+
+const ROUTE_STATUS_LOG_TYPE: Record<RouteStatusAction, ActivityActionType> = {
+  drop_off: "route_dropped_off",
+  pickup: "route_picked_up",
+  reset_drop_off: "route_dropoff_reset",
+  reset_pickup: "route_pickup_reset",
+};
+
+/**
+ * Marks (or, manager-only, resets) a booking's transport status — the only
+ * write an employee is ever allowed to make: pressing "تم التنزيل" (drop
+ * off) or "تم الاستلام" (pickup) on the Route Schedule. Pickup can only
+ * follow a drop-off, and resetting the drop-off clears the pickup along with
+ * it, so the two timestamps can never end up in an inconsistent order.
+ */
+export async function updateBookingRouteStatusServer(
+  db: Firestore,
+  bookingId: string,
+  action: RouteStatusAction,
+  actor: Actor
+): Promise<void> {
+  assertActive(actor);
+  if (action === "reset_drop_off" || action === "reset_pickup") requireManager(actor);
+
+  const bookingRef = db.collection("bookings").doc(bookingId);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(bookingRef);
+    if (!snap.exists) throw new ServiceError("الحجز غير موجود", "NOT_FOUND", 404);
+    const before = snap.data() as Booking;
+    if (before.status !== "active") {
+      throw new ServiceError("لا يمكن تعديل حجز ملغى", "INVALID_STATE", 400);
+    }
+
+    let after: Record<string, unknown>;
+    if (action === "drop_off") {
+      if (before.dropOffAt) throw new ServiceError("تم تسجيل التنزيل مسبقاً", "INVALID_STATE", 400);
+      after = { dropOffAt: FieldValue.serverTimestamp() };
+    } else if (action === "pickup") {
+      if (!before.dropOffAt) throw new ServiceError("يجب تسجيل التنزيل أولاً", "INVALID_STATE", 400);
+      if (before.pickupAt) throw new ServiceError("تم تسجيل الاستلام مسبقاً", "INVALID_STATE", 400);
+      after = { pickupAt: FieldValue.serverTimestamp() };
+    } else if (action === "reset_drop_off") {
+      after = { dropOffAt: null, pickupAt: null };
+    } else {
+      after = { pickupAt: null };
+    }
+
+    after.updatedBy = actor.uid;
+    after.updatedAt = FieldValue.serverTimestamp();
+    tx.update(bookingRef, after);
+
+    logActivity(tx, db, {
+      type: ROUTE_STATUS_LOG_TYPE[action],
+      entityType: "booking",
+      entityId: bookingId,
+      actor,
+      before: { ...before },
+      after: { ...before, ...after },
+    });
   });
 }
