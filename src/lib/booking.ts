@@ -52,7 +52,6 @@ export interface CreateBookingInput {
   areaName: string;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -64,12 +63,12 @@ export async function createBooking(input: CreateBookingInput): Promise<string> 
   return data.id as string;
 }
 
+/** Never includes payment — see updateBookingPayment, the only way payment ever changes. */
 export interface EditableBookingFields {
   areaId: string;
   areaName: string;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
 }
@@ -85,9 +84,13 @@ export async function cancelBooking(
   await callApi(`/api/bookings/${bookingId}/cancel`, "POST", options);
 }
 
-export async function markBookingPaid(
-  bookingId: string,
-  options: { paymentMethod: PaymentMethod }
-): Promise<void> {
-  await callApi(`/api/bookings/${bookingId}/mark-paid`, "POST", options);
+export interface PaymentPatch {
+  isPaid: boolean;
+  paymentMethod: PaymentMethod | null;
+  paidAmount: number | null;
+}
+
+/** Manager only — the server rejects this for any non-manager session. */
+export async function updateBookingPayment(bookingId: string, patch: PaymentPatch): Promise<void> {
+  await callApi(`/api/bookings/${bookingId}/payment`, "PATCH", patch);
 }

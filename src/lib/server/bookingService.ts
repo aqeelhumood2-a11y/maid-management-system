@@ -55,6 +55,12 @@ function assertActive(actor: Actor) {
   }
 }
 
+function requireManager(actor: Actor) {
+  if (actor.role !== "manager") {
+    throw new ServiceError("هذا الإجراء متاح للمدير فقط", "FORBIDDEN", 403);
+  }
+}
+
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
@@ -70,7 +76,6 @@ function validateBookingFields(fields: {
   areaId?: string;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
 }) {
   if (fields.date !== undefined && !DATE_RE.test(fields.date)) {
     throw new ServiceError("تاريخ غير صالح", "VALIDATION", 400);
@@ -90,13 +95,41 @@ function validateBookingFields(fields: {
   if (typeof fields.amount !== "number" || fields.amount < 0) {
     throw new ServiceError("مبلغ غير صالح", "VALIDATION", 400);
   }
-  if (
-    fields.paymentMethod !== null &&
-    fields.paymentMethod !== "benefit" &&
-    fields.paymentMethod !== "cash"
-  ) {
-    throw new ServiceError("طريقة دفع غير صالحة", "VALIDATION", 400);
+}
+
+/**
+ * Shared by every payment transition (mark paid / revert / edit-while-paid).
+ * Payment method is required exactly when marking/keeping a booking paid;
+ * amount, when provided, must be a non-negative number — never trusts the
+ * client's arithmetic beyond that.
+ */
+function validatePaymentFields(isPaid: boolean, paymentMethod: PaymentMethod | null, paidAmount: number | null) {
+  if (isPaid) {
+    if (paymentMethod !== "benefit" && paymentMethod !== "cash") {
+      throw new ServiceError("طريقة الدفع مطلوبة", "VALIDATION", 400);
+    }
+    if (typeof paidAmount !== "number" || !Number.isFinite(paidAmount) || paidAmount < 0) {
+      throw new ServiceError("المبلغ المدفوع غير صالح", "VALIDATION", 400);
+    }
   }
+}
+
+/**
+ * Employees share the exact same GET /api/bookings endpoint managers use for
+ * the Daily/Weekly schedule — this is the one place that enforces
+ * requirement #7 (employees must never see payment information) for that
+ * shared read path. Exported and unit-tested directly as a security
+ * regression guard, independent of the route wiring.
+ */
+export function redactPaymentFields(booking: Booking): Booking {
+  return {
+    ...booking,
+    paid: false,
+    paymentMethod: null,
+    paidAmount: null,
+    paymentDate: null,
+    paymentBy: null,
+  };
 }
 
 function logActivity(
@@ -134,7 +167,6 @@ export interface CreateBookingInput {
   areaName: string;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   source: BookingSource;
@@ -182,10 +214,14 @@ export async function createBookingServer(
       areaName: input.areaName,
       hours: input.hours,
       amount: input.amount,
-      paymentMethod: input.paymentMethod,
-      paid: input.paymentMethod !== null,
-      paymentDate: input.paymentMethod !== null ? FieldValue.serverTimestamp() : null,
-      paymentBy: input.paymentMethod !== null ? actor.uid : null,
+      // Payment is never set at creation time — it's managed exclusively
+      // afterward from the manager-only payment screens (see
+      // updateBookingPaymentServer below).
+      paymentMethod: null,
+      paid: false,
+      paidAmount: null,
+      paymentDate: null,
+      paymentBy: null,
       customerPhone: input.customerPhone,
       customerLocation: input.customerLocation,
       source: input.source,
@@ -224,19 +260,20 @@ export async function createBookingServer(
 }
 
 /**
- * Non-slot fields are always editable (area/hours/amount/payment/customer
- * info). `date`/`shift`/`workerId` are accepted here purely as a trusted,
+ * Non-slot, non-payment fields (area/hours/amount/customer info).
+ * `date`/`shift`/`workerId` are accepted here purely as a trusted,
  * server-side "move" primitive — the HTTP route never forwards them from the
  * client, since no UI feature exposes moving a booking. It exists so the
  * Friday authorization guarantee holds even if a "move" is ever wired up,
- * and so it can be exercised directly in tests.
+ * and so it can be exercised directly in tests. Payment is deliberately not
+ * part of this patch at all — see updateBookingPaymentServer below, which is
+ * the only way any of a booking's payment fields ever change.
  */
 export interface BookingPatch {
   areaId: string;
   areaName: string;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   date?: string;
@@ -284,16 +321,11 @@ export async function updateBookingServer(
       }
     }
 
-    const paid = patch.paymentMethod !== null;
     const after: Record<string, unknown> = {
       areaId: patch.areaId,
       areaName: patch.areaName,
       hours: patch.hours,
       amount: patch.amount,
-      paymentMethod: patch.paymentMethod,
-      paid,
-      paymentDate: paid ? before.paymentDate ?? FieldValue.serverTimestamp() : null,
-      paymentBy: paid ? before.paymentBy ?? actor.uid : null,
       customerPhone: patch.customerPhone,
       customerLocation: patch.customerLocation,
       updatedBy: actor.uid,
@@ -376,13 +408,43 @@ export async function cancelBookingServer(
   });
 }
 
-export async function markBookingPaidServer(
+export interface PaymentPatch {
+  isPaid: boolean;
+  paymentMethod: PaymentMethod | null;
+  paidAmount: number | null;
+}
+
+/**
+ * The only function that ever changes a booking's payment fields — manager
+ * only. Handles all three transitions in one place so the manager UI's
+ * single Paid checkbox + method + amount panel can always call the same
+ * endpoint regardless of the booking's current state:
+ *
+ *  - unpaid -> paid ("mark paid"): requires a payment method and a
+ *    non-negative amount; paymentDate is stamped for the first time here.
+ *  - paid -> unpaid ("revert"): clears method/amount/date/recordedBy
+ *    outright, regardless of whatever the client sent for them.
+ *  - paid -> paid with a different method and/or amount ("edit"): updates
+ *    just those fields and leaves paymentDate untouched (it only ever
+ *    records when a booking *first* became paid) — logged as one or two
+ *    granular activity entries (payment_method_changed /
+ *    payment_amount_changed) rather than another payment_marked_paid, so
+ *    the audit trail distinguishes "this was paid again" from "the amount
+ *    was corrected".
+ *
+ * `paymentBy` ("Recorded By") is updated on every transition to reflect
+ * whoever most recently touched the payment record, and cleared on revert
+ * along with everything else — an unpaid booking has no one to attribute a
+ * payment to.
+ */
+export async function updateBookingPaymentServer(
   db: Firestore,
   bookingId: string,
-  options: { paymentMethod: PaymentMethod },
+  patch: PaymentPatch,
   actor: Actor
 ): Promise<void> {
-  assertActive(actor);
+  requireManager(actor);
+  validatePaymentFields(patch.isPaid, patch.paymentMethod, patch.paidAmount);
   const bookingRef = db.collection("bookings").doc(bookingId);
 
   await db.runTransaction(async (tx) => {
@@ -393,24 +455,54 @@ export async function markBookingPaidServer(
       throw new ServiceError("لا يمكن تعديل حجز ملغى", "INVALID_STATE", 400);
     }
 
-    const after = {
-      paymentMethod: options.paymentMethod,
-      paid: true,
-      paymentDate: FieldValue.serverTimestamp(),
-      paymentBy: actor.uid,
-      updatedBy: actor.uid,
-      updatedAt: FieldValue.serverTimestamp(),
-    };
+    let after: Record<string, unknown>;
+    const logs: { type: ActivityActionType }[] = [];
 
+    if (!patch.isPaid) {
+      after = {
+        paid: false,
+        paymentMethod: null,
+        paidAmount: null,
+        paymentDate: null,
+        paymentBy: null,
+      };
+      if (before.paid) logs.push({ type: "payment_reverted" });
+    } else if (!before.paid) {
+      after = {
+        paid: true,
+        paymentMethod: patch.paymentMethod,
+        paidAmount: patch.paidAmount,
+        paymentDate: FieldValue.serverTimestamp(),
+        paymentBy: actor.uid,
+      };
+      logs.push({ type: "payment_marked_paid" });
+    } else {
+      after = {
+        paid: true,
+        paymentMethod: patch.paymentMethod,
+        paidAmount: patch.paidAmount,
+        paymentDate: before.paymentDate,
+        paymentBy: actor.uid,
+      };
+      if (before.paymentMethod !== patch.paymentMethod) logs.push({ type: "payment_method_changed" });
+      if (before.paidAmount !== patch.paidAmount) logs.push({ type: "payment_amount_changed" });
+    }
+
+    if (logs.length === 0) return;
+
+    after.updatedBy = actor.uid;
+    after.updatedAt = FieldValue.serverTimestamp();
     tx.update(bookingRef, after);
 
-    logActivity(tx, db, {
-      type: "payment_marked_paid",
-      entityType: "booking",
-      entityId: bookingId,
-      actor,
-      before: { ...before },
-      after: { ...before, ...after },
-    });
+    for (const log of logs) {
+      logActivity(tx, db, {
+        type: log.type,
+        entityType: "booking",
+        entityId: bookingId,
+        actor,
+        before: { ...before },
+        after: { ...before, ...after },
+      });
+    }
   });
 }

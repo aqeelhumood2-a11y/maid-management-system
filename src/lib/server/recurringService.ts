@@ -1,13 +1,15 @@
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { addDaysToDateStr } from "../date";
-import type { Booking, PaymentMethod, RecurringSchedule, Shift } from "../types";
+import type { Booking, RecurringSchedule, Shift } from "../types";
 import {
   cancelBookingServer,
   createBookingServer,
   ServiceError,
+  updateBookingPaymentServer,
   updateBookingServer,
   type Actor,
   type BookingPatch,
+  type PaymentPatch,
 } from "./bookingService";
 
 /**
@@ -70,7 +72,6 @@ export interface CreateRecurringInput {
   dayOfWeek: number;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   startDate: string;
@@ -95,7 +96,6 @@ export async function createRecurringScheduleServer(
     dayOfWeek: input.dayOfWeek,
     hours: input.hours,
     amount: input.amount,
-    paymentMethod: input.paymentMethod,
     customerPhone: input.customerPhone,
     customerLocation: input.customerLocation,
     startDate: input.startDate,
@@ -170,7 +170,6 @@ export async function editRecurringOccurrenceServer(
           areaName: fields.areaName,
           hours: fields.hours,
           amount: fields.amount,
-          paymentMethod: fields.paymentMethod,
           customerPhone: fields.customerPhone,
           customerLocation: fields.customerLocation,
           source: "recurring",
@@ -190,7 +189,6 @@ export async function editRecurringOccurrenceServer(
       areaName: fields.areaName,
       hours: fields.hours,
       amount: fields.amount,
-      paymentMethod: fields.paymentMethod,
       customerPhone: fields.customerPhone,
       customerLocation: fields.customerLocation,
       updatedBy: actor.uid,
@@ -230,7 +228,6 @@ export async function editRecurringOccurrenceServer(
     dayOfWeek: recurring.dayOfWeek,
     hours: fields.hours,
     amount: fields.amount,
-    paymentMethod: fields.paymentMethod,
     customerPhone: fields.customerPhone,
     customerLocation: fields.customerLocation,
     startDate: date,
@@ -252,6 +249,56 @@ export async function editRecurringOccurrenceServer(
     after: { ...newData, id: newRef.id },
   });
   await batch.commit();
+}
+
+export interface SetRecurringOccurrencePaymentInput {
+  recurring: RecurringSchedule;
+  date: string;
+  payment: PaymentPatch;
+}
+
+/**
+ * Sets the payment status for one specific occurrence of a recurring
+ * schedule — never the schedule as a whole. If that date hasn't been
+ * materialized into a concrete Booking yet (no one has edited or paid it
+ * before), it's created first from the recurring schedule's own current
+ * fields, exactly like editRecurringOccurrenceServer's "single" scope does.
+ * This is what guarantees requirement #8: paying one occurrence can never
+ * mark any other occurrence — materialized or not — as paid, since every
+ * occurrence gets (or already has) its own independent Booking document
+ * and its own independent payment fields.
+ */
+export async function setRecurringOccurrencePaymentServer(
+  db: Firestore,
+  input: SetRecurringOccurrencePaymentInput,
+  actor: Actor
+): Promise<void> {
+  requireManager(actor);
+  const { recurring, date, payment } = input;
+
+  const existing = await findMaterializedBooking(db, recurring.id, date);
+  const bookingId = existing
+    ? existing.id
+    : await createBookingServer(
+        db,
+        {
+          date,
+          shift: recurring.shift,
+          workerId: recurring.workerId,
+          workerName: recurring.workerName,
+          areaId: recurring.areaId,
+          areaName: recurring.areaName,
+          hours: recurring.hours,
+          amount: recurring.amount,
+          customerPhone: recurring.customerPhone,
+          customerLocation: recurring.customerLocation,
+          source: "recurring",
+          recurringSeriesId: recurring.id,
+        },
+        actor
+      );
+
+  await updateBookingPaymentServer(db, bookingId, payment, actor);
 }
 
 export type RecurringCancelScope = "single" | "forward";

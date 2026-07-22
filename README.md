@@ -16,7 +16,7 @@ enter. Anyone who opens the site sees the live schedule immediately:
 - A small, unobtrusive **⚙︎** button in the header opens a manager password
   prompt. The correct password opens the **Manager** section: Future
   Booking, Worker Management, Recurring Weekly Schedule, Routes, Reports,
-  Unpaid Bookings, Activity History and Settings. A wrong password just
+  Payments, Activity History and Settings. A wrong password just
   shows an inline error — the visitor stays on the Employee screen.
 
 There is no Firebase Authentication anywhere in this app, and no concept of
@@ -203,7 +203,10 @@ npm start
 - **Manager** (the shared password) — everything an employee has, plus the
   full `/manager` section: Future Booking (manual date selection + Friday
   override), Worker Management, Recurring Weekly Schedule, Routes, Reports,
-  Unpaid Bookings, Activity History, Settings (business name, areas).
+  Payments (mark/edit/revert paid status, filter by All/Paid/Unpaid/Cash/
+  BenefitPay), Activity History, Settings (business name, areas). Payment
+  data — on the schedule grid, in Reports, and via the Payments page — is
+  visible to a manager session only; see **Manager Payment Tracking**.
 
 Since there are no individual accounts anymore, every action's audit trail
 (`activityLogs`, and `createdBy`/`updatedBy`/`cancelledBy` fields) is
@@ -213,31 +216,117 @@ consequence of removing per-user login, not an oversight.
 
 ## Main workflows
 
-- **Booking a shift**: click a green cell → fill area/hours/amount/payment →
-  saved atomically with a slot lock (see below).
+- **Booking a shift**: click a green cell → fill area/hours/amount →
+  saved atomically with a slot lock (see below). No payment is collected or
+  asked for at booking time — see **Manager Payment Tracking**.
 - **Recurring schedule**: manager defines a weekly pattern (worker, area, shift,
-  day-of-week ≠ Friday, hours/amount/payment). Editing or cancelling requires
+  day-of-week ≠ Friday, hours/amount). Editing or cancelling requires
   choosing a scope — this occurrence only / from this date onward / entire
   schedule (edit) or this date only / from this date onward (cancel) — matching
   the Arabic labels specified in the brief.
-- **Unpaid bookings**: manager marks a booking paid, selecting Benefit/Cash;
-  payment date is recorded, and the booking disappears from the unpaid list
-  on every connected client within one polling interval.
+- **Payments**: manager marks a booking (or a specific occurrence of a
+  recurring schedule) paid, selecting Benefit/Cash and an amount; payment date
+  and recorder are recorded automatically. See **Manager Payment Tracking**.
 - **Routes**: manager picks a date + shift and gets a copyable/callable list of
   worker → area → customer phone/location for active bookings only.
+
+## Manager Payment Tracking
+
+Payment is entirely decoupled from booking creation and lives only in the
+manager-only surface — a booking (or recurring occurrence) is created with no
+payment fields at all, and a manager records payment for it afterward,
+whenever and however they choose.
+
+- **Booking creation never touches payment.** `createBookingServer` always
+  writes a new booking with `paid: false, paymentMethod: null, paidAmount:
+  null, paymentDate: null, paymentBy: null`, regardless of what the caller
+  sends — there is no `paymentMethod`/`paid` field left in any booking-create
+  or booking-edit input type (`CreateBookingInput`, `BookingPatch`,
+  `EditableBookingFields`, `CreateRecurringInput`). Payment is set exclusively
+  through the dedicated payment endpoints below.
+- **Payment is set per-booking, atomically, by `updateBookingPaymentServer`**
+  (`src/lib/server/bookingService.ts`), the only function that ever writes
+  `paid`/`paymentMethod`/`paidAmount`/`paymentDate`/`paymentBy`:
+  - Manager-only (`requireManager`) — throws `FORBIDDEN` for any non-manager
+    `Actor`, checked server-side against the real session cookie, not the
+    request body.
+  - Marking paid requires a payment method (`benefit` or `cash`) and a
+    non-negative numeric amount (`validatePaymentFields`); `paymentDate` is
+    set once, server-side (`FieldValue.serverTimestamp()`), the first time a
+    booking transitions to paid, and never overwritten by a later edit to the
+    method or amount while it stays paid.
+  - Unchecking paid clears `paymentMethod`, `paidAmount` and `paymentDate`
+    back to `null` in the same transaction.
+  - Every transition is logged to `activityLogs` with the precise action that
+    happened — `payment_marked_paid`, `payment_reverted`,
+    `payment_method_changed`, `payment_amount_changed` — computed by diffing
+    the before/after payment state, so editing the amount on an
+    already-paid booking logs `payment_amount_changed`, not another
+    `payment_marked_paid`.
+- **Recurring schedules carry no payment concept of their own.**
+  `RecurringSchedule` has no `paymentMethod`/`paid` field at all — payment is
+  strictly a property of one materialized `Booking` document for one calendar
+  date. `setRecurringOccurrencePaymentServer` (`src/lib/server/recurringService.ts`)
+  materializes that date's booking on demand (from the recurring schedule's
+  own current fields, exactly like a single-occurrence edit) if it doesn't
+  exist yet, then calls `updateBookingPaymentServer` on it. This guarantees
+  paying one occurrence can never mark any other occurrence — past, future,
+  materialized or not — as paid; see the "per-occurrence independence" tests
+  in `tests/emulator/transactions.test.ts`.
+- **Manager-only API surface**: `PATCH /api/bookings/[id]/payment`,
+  `PATCH /api/recurring/[id]/payment` (occurrence payment), and
+  `GET /api/bookings/payments?filter=all|paid|unpaid|cash|benefit` (the
+  filterable Payments listing) all `401` immediately for a non-manager
+  session, before touching Firestore.
+- **Employees never see payment data, on any route** — not just hidden in the
+  UI. `GET /api/bookings` is the same endpoint the Employee Today/Weekly
+  schedule polls, so instead of a second endpoint, that route's response is
+  redacted server-side for non-manager sessions: `redactPaymentFields`
+  (`src/lib/server/bookingService.ts`) nulls out every payment field before
+  the JSON is ever serialized, unit-tested directly in
+  `tests/unit/paymentSecurity.test.ts`. The manager-only Payments listing
+  (`/api/bookings/payments`) and the Reports/Payments pages are separate
+  routes that skip the redaction for a verified manager session.
+- **Dashboard Payment Summary** (`GET /api/dashboard/payment-summary`,
+  computed by `src/lib/server/paymentSummary.ts`, shown on `/manager`): Total
+  Unpaid, Total Paid Today, Total Paid This Week, Cash Total, BenefitPay
+  Total, Grand Total Collected. "Today"/"this week" are calendar-date buckets
+  in `Asia/Bahrain`, matching every other date computation in this app; a
+  paid booking's contribution falls in "today"/"this week" based on its
+  `paymentDate`, not its booking `date`.
+- **Manager filtering**: the Payments page (`/manager/unpaid`) filters
+  bookings by All / Paid / Unpaid / Cash / BenefitPay, backed by
+  `GET /api/bookings/payments` and a composite Firestore index on
+  `status, paid, paymentMethod, date`.
+- **Migration**: there is no backfill script. Existing bookings already had
+  `paid: false` by construction before this feature, satisfying "unpaid
+  defaults" automatically. The one field genuinely added after some bookings
+  already existed, `paidAmount`, is read with a `paidAmount ?? amount`
+  fallback everywhere a paid total is computed (`paymentSummary.ts`, the
+  Payments page) — matching this project's established pattern of handling
+  legacy/missing fields gracefully in code rather than running a manual
+  migration step.
+- **On the schedule grid**: booked cells show a small green/amber dot
+  (paid/unpaid) in `ScheduleTable`, rendered only when `isManager` is true —
+  the underlying data is already redacted for employees regardless, so this
+  is a UX-only gate on top of the real security boundary above.
 
 ## Database design (Firestore collections)
 
 - `workers/{id}` — `name, phone, active, createdAt/By, updatedAt/By`
 - `areas/{id}` — `name, active, createdAt/By, updatedAt/By`
 - `bookings/{id}` — full booking record (date `yyyy-MM-dd`, shift, worker/area id
-  + name snapshot, hours, amount, paymentMethod, paid, paymentDate/By,
-  customerPhone/Location, source, recurringSeriesId, status, cancellation
-  metadata, createdBy/At, updatedBy/At)
+  + name snapshot, hours, amount, `paid`, `paymentMethod`, `paidAmount`,
+  `paymentDate`, `paymentBy`, customerPhone/Location, source,
+  recurringSeriesId, status, cancellation metadata, createdBy/At, updatedBy/At).
+  Payment fields always start `false`/`null` at creation and are only ever
+  set afterward via `updateBookingPaymentServer` — see **Manager Payment
+  Tracking**.
 - `slots/{workerId_date_shift}` — the double-booking lock document (see below)
 - `recurringSchedules/{id}` — the weekly pattern (worker/area/shift/dayOfWeek,
-  hours/amount/payment, startDate, endDate, status, `replacesId` for "edit from
-  this date onward" chains)
+  hours/amount, startDate, endDate, status, `replacesId` for "edit from
+  this date onward" chains). Carries no payment field — payment belongs to a
+  materialized occurrence, never the schedule itself.
 - `recurringExceptions/{recurringId_date}` — marks one calendar date as
   cancelled out of a recurring pattern (single-occurrence edits instead
   materialize a concrete `bookings` document — see Concurrency below)
@@ -304,19 +393,22 @@ ever pre-generating every future week's bookings.
   Friday rejection, move-to-Friday rejection, manager override, concurrent
   double-booking) and `tests/emulator/rules.test.ts` (direct client access
   denied for every collection).
-- Every write re-validates its own fields server-side (shift/payment-method
-  enums, positive hours/amount, date shape) — nothing trusts client-side
-  form validation.
+- Every write re-validates its own fields server-side (shift enum, positive
+  hours/amount, date shape, payment-method enum + non-negative amount when
+  marking paid) — nothing trusts client-side form validation.
+- Payment mutations are manager-only, enforced by `requireManager` inside
+  the trusted server layer itself (not just at the route level) — see
+  **Manager Payment Tracking**.
 - `activityLogs` is append-only and manager-read-only
   (`GET /api/activity`) — no route ever updates or deletes an entry.
 
 ## Implemented employee features
 
 Today Schedule and Weekly Schedule (with previous/current/next week
-navigation), quick booking on an available cell (area/hours/amount/payment
-method only — worker/date/shift are implicit), booking details with edit/cancel
-on a booked cell, Friday shown as a fixed holiday everywhere. None of this
-requires any credential.
+navigation), quick booking on an available cell (area/hours/amount only —
+worker/date/shift are implicit, no payment step), booking details with
+edit/cancel on a booked cell, Friday shown as a fixed holiday everywhere. None
+of this requires any credential, and none of it ever exposes payment data.
 
 ## Implemented manager features
 
@@ -325,17 +417,21 @@ confirmation), Worker Management (add/edit/activate/deactivate, history
 preserved), Recurring Weekly Schedule (create + 3-way edit scope + 2-way cancel
 scope), Routes (date+shift → worker/area/phone/location, active bookings only,
 tap-to-call), Reports (worker/area/date/date-range/week/month/paid/payment
-method/shift filters with totals and a reset button), Unpaid Bookings (mark
-paid with method + audit trail), Activity History (filterable, immutable),
-Settings (business name, area CRUD).
+method/shift filters with totals and a reset button), Payments (mark
+paid/edit/revert with method + amount + audit trail, filter by All/Paid/
+Unpaid/Cash/BenefitPay), Dashboard Payment Summary (unpaid/paid-today/
+paid-this-week/cash/benefit/grand totals), Activity History (filterable,
+immutable, including payment-specific action types), Settings (business
+name, area CRUD).
 
 ## Tests and exact results
 
 ```
-npm run test           → 4 files, 32 tests passed  (date / availability / recurring pure
-                          logic + managerAuth password/session-token unit tests)
-npm run test:emulator  → 3 files, 61 tests passed  (Firestore deny-all rules for every
-                          collection, server booking/recurring transaction tests, and
+npm run test           → 6 files, 42 tests passed  (date / availability / recurring pure
+                          logic, managerAuth password/session-token, scheduleCellLabel, and
+                          payment-redaction security unit tests)
+npm run test:emulator  → 3 files, 72 tests passed  (Firestore deny-all rules for every
+                          collection, server booking/recurring/payment transaction tests, and
                           server catalog (areas/workers/settings) tests — run against the
                           Firebase Emulator Suite via `firebase emulators:exec`)
 npm run lint            → 0 problems
@@ -348,10 +444,20 @@ regardless of claimed identity, automatic availability calculation, Friday
 holiday behavior, double-booking prevention under both sequential and
 concurrent attempts, cancellation releasing availability, recurring
 single-occurrence exceptions, future availability many months out with zero
-pre-generated documents, the unpaid→paid transition, manager-only
-authorization for areas/workers/settings/recurring schedules, and — for the
-manager password session specifically — correct/incorrect password handling,
-tampered-payload and tampered-signature rejection, and expiry.
+pre-generated documents, manager-only authorization for areas/workers/
+settings/recurring schedules, and — for the manager password session
+specifically — correct/incorrect password handling, tampered-payload and
+tampered-signature rejection, and expiry.
+
+Payment-specific coverage: default unpaid booking creation, mark
+paid (method + amount + auto payment date), rejecting a missing payment
+method or a negative amount, rejecting a non-manager actor, preserving the
+original payment date across a method/amount edit while staying paid,
+clearing all payment fields on revert, the exact activity-log action logged
+for each transition, per-occurrence payment independence for recurring
+schedules (paying one date never touches another), and — as a unit-level
+security regression guard — that `redactPaymentFields` strips every payment
+field from a booking before it can reach a non-manager session.
 
 ## Known limitations
 

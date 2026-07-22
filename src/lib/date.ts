@@ -14,6 +14,11 @@ export function todayBahrain(): string {
   return bahrainPartsFormatter.format(new Date());
 }
 
+/** Any instant's calendar date in Asia/Bahrain, as yyyy-MM-dd. */
+export function dateInBahrain(date: Date): string {
+  return bahrainPartsFormatter.format(date);
+}
+
 /** Parses a yyyy-MM-dd string into a UTC-anchored Date (calendar-safe, no tz drift). */
 export function parseDateOnly(dateStr: string): Date {
   return new Date(`${dateStr}T00:00:00Z`);

@@ -10,21 +10,37 @@ import {
   ApiError,
   cancelBooking,
   updateBookingFields,
+  updateBookingPayment,
   type EditableBookingFields,
+  type PaymentPatch,
 } from "@/lib/booking";
-import { formatDateAr, weekdayLabelAr } from "@/lib/date";
+import { formatDateAr, formatTimestampAr, weekdayLabelAr } from "@/lib/date";
 import {
   cancelRecurringOccurrence,
   editRecurringOccurrence,
+  setRecurringOccurrencePayment,
   type RecurringCancelScope,
   type RecurringEditScope,
 } from "@/lib/recurring";
 import type { Booking, CellResolution, PaymentMethod, RecurringSchedule, Shift, Worker } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
-const PAYMENT_LABEL: Record<string, string> = { benefit: "بنفت", cash: "نقدي" };
 
 type View = "details" | "edit" | "cancelSingle" | "editRecurringScope" | "cancelRecurringScope";
+
+/**
+ * A virtual (not-yet-materialized) recurring occurrence has no Booking
+ * document yet, so it has no payment record either — it reads as plainly
+ * unpaid until a manager actually acts on it, at which point the payment
+ * panel materializes it server-side (see setRecurringOccurrencePayment).
+ */
+const UNPAID_VIRTUAL_PAYMENT = {
+  paid: false as const,
+  paymentMethod: null,
+  paidAmount: null,
+  paymentDate: null,
+  paymentBy: null,
+};
 
 export function BookingDetailsModal({
   open,
@@ -60,16 +76,24 @@ export function BookingDetailsModal({
     areaName: recurring!.areaName,
     hours: recurring!.hours,
     amount: recurring!.amount,
-    paymentMethod: recurring!.paymentMethod,
     customerPhone: recurring!.customerPhone,
     customerLocation: recurring!.customerLocation,
-    paid: recurring!.paymentMethod !== null,
   };
+  const payment = booking ?? UNPAID_VIRTUAL_PAYMENT;
 
   function close() {
     setView("details");
     setError("");
     onClose();
+  }
+
+  async function savePayment(patch: PaymentPatch) {
+    if (booking) {
+      await updateBookingPayment(booking.id, patch);
+    } else {
+      await setRecurringOccurrencePayment({ recurring: recurring!, date, payment: patch });
+    }
+    onSuccess();
   }
 
   return (
@@ -84,14 +108,10 @@ export function BookingDetailsModal({
             <Field label="المنطقة" value={displayFields.areaName} />
             <Field label="الساعات" value={String(displayFields.hours)} />
             <Field label="المبلغ" value={`${displayFields.amount} د.ب`} />
-            <Field
-              label="الدفع"
-              value={displayFields.paymentMethod ? PAYMENT_LABEL[displayFields.paymentMethod] : "غير مدفوع"}
-            />
-            {"customerPhone" in displayFields && displayFields.customerPhone && (
+            {displayFields.customerPhone && (
               <Field label="هاتف العميل" value={displayFields.customerPhone} dir="ltr" />
             )}
-            {"customerLocation" in displayFields && displayFields.customerLocation && (
+            {displayFields.customerLocation && (
               <Field label="الموقع" value={displayFields.customerLocation} />
             )}
           </dl>
@@ -101,6 +121,15 @@ export function BookingDetailsModal({
               هذا حجز ضمن جدول متكرر أسبوعي
               {!isManager ? " ويُدار من قبل المدير." : "."}
             </div>
+          )}
+
+          {/*
+            Employees never see anything about payment status — not a
+            field, not a badge, nothing. This panel only renders at all
+            for a manager session.
+          */}
+          {isManager && (
+            <PaymentPanel key={booking?.id ?? `${recurring?.id}_${date}`} payment={payment} onSave={savePayment} />
           )}
 
           {(!isRecurring || isManager) && (
@@ -229,6 +258,135 @@ function Field({ label, value, dir }: { label: string; value: string; dir?: "ltr
   );
 }
 
+/**
+ * The Manager Payment Tracking module's core control: a Paid checkbox that
+ * reveals a required payment method + editable paid amount when checked,
+ * and clears both (server-side, regardless of what's left in these local
+ * fields) when unchecked. Payment date and "recorded by" are read-only,
+ * server-derived, and only ever shown once a booking is actually paid.
+ */
+function PaymentPanel({
+  payment,
+  onSave,
+}: {
+  payment: {
+    paid: boolean;
+    paymentMethod: PaymentMethod | null;
+    paidAmount: number | null;
+    paymentDate: Booking["paymentDate"];
+    paymentBy: string | null;
+  };
+  onSave: (patch: PaymentPatch) => Promise<void>;
+}) {
+  const [isPaid, setIsPaid] = useState(payment.paid);
+  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(payment.paymentMethod ?? "");
+  const [paidAmount, setPaidAmount] = useState(payment.paidAmount != null ? String(payment.paidAmount) : "");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const dirty =
+    isPaid !== payment.paid ||
+    (isPaid && ((paymentMethod || null) !== payment.paymentMethod || paidAmount !== String(payment.paidAmount ?? "")));
+
+  function togglePaid(next: boolean) {
+    setIsPaid(next);
+    setSaved(false);
+    if (next && !paidAmount) setPaidAmount(""); // manager fills it in explicitly
+  }
+
+  async function handleSave() {
+    setError("");
+    if (isPaid) {
+      if (paymentMethod !== "benefit" && paymentMethod !== "cash") {
+        setError("طريقة الدفع مطلوبة");
+        return;
+      }
+      const amountNum = Number(paidAmount);
+      if (paidAmount === "" || Number.isNaN(amountNum) || amountNum < 0) {
+        setError("أدخل مبلغاً صحيحاً");
+        return;
+      }
+    }
+
+    setLoading(true);
+    try {
+      await onSave({
+        isPaid,
+        paymentMethod: isPaid ? (paymentMethod as PaymentMethod) : null,
+        paidAmount: isPaid ? Number(paidAmount) : null,
+      });
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "تعذر تسجيل الدفع");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-slate-200 p-3">
+      <p className="text-xs font-semibold text-slate-500">حالة الدفع</p>
+      <ErrorBanner message={error} />
+
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          className="h-5 w-5 accent-emerald-600"
+          checked={isPaid}
+          onChange={(e) => togglePaid(e.target.checked)}
+        />
+        <span className="text-sm font-medium text-slate-800">مدفوع</span>
+      </label>
+
+      {isPaid && (
+        <div className="grid grid-cols-2 gap-3">
+          <SelectInput
+            label="طريقة الدفع"
+            required
+            value={paymentMethod}
+            onChange={(e) => {
+              setPaymentMethod(e.target.value as "" | PaymentMethod);
+              setSaved(false);
+            }}
+          >
+            <option value="">اختر طريقة الدفع</option>
+            <option value="benefit">بنفت</option>
+            <option value="cash">نقدي</option>
+          </SelectInput>
+          <TextInput
+            label="المبلغ المدفوع (د.ب)"
+            type="number"
+            required
+            min="0"
+            step="0.001"
+            value={paidAmount}
+            onChange={(e) => {
+              setPaidAmount(e.target.value);
+              setSaved(false);
+            }}
+          />
+        </div>
+      )}
+
+      {payment.paid && (
+        <dl className="grid grid-cols-2 gap-3 text-sm">
+          <Field
+            label="تاريخ الدفع"
+            value={payment.paymentDate ? formatTimestampAr(new Date(payment.paymentDate._seconds * 1000)) : ""}
+          />
+          <Field label="سجّل بواسطة" value={payment.paymentBy === "manager" ? "المدير" : payment.paymentBy || ""} />
+        </dl>
+      )}
+
+      <Button size="sm" onClick={handleSave} loading={loading} disabled={!dirty || saved}>
+        حفظ حالة الدفع
+      </Button>
+      {saved && <p className="text-xs text-emerald-700">تم الحفظ.</p>}
+    </div>
+  );
+}
+
 function EditForm({
   initial,
   loading,
@@ -245,7 +403,6 @@ function EditForm({
   const [areaName, setAreaName] = useState(initial.areaName);
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(initial.paymentMethod ?? "");
   const [customerPhone, setCustomerPhone] = useState(initial.customerPhone);
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation);
   const [localError, setLocalError] = useState("");
@@ -264,7 +421,6 @@ function EditForm({
       areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
-      paymentMethod: paymentMethod || null,
       customerPhone,
       customerLocation,
     });
@@ -284,11 +440,6 @@ function EditForm({
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
       </div>
-      <SelectInput label="طريقة الدفع" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}>
-        <option value="">بدون دفع (غير مدفوع)</option>
-        <option value="benefit">بنفت</option>
-        <option value="cash">نقدي</option>
-      </SelectInput>
       <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
       <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
       <div className="flex gap-3">
@@ -339,7 +490,7 @@ function RecurringEditForm({
   onCancel,
   onSubmit,
 }: {
-  initial: { areaName: string; hours: number; amount: number; paymentMethod: PaymentMethod | null; customerPhone?: string; customerLocation?: string };
+  initial: { areaName: string; hours: number; amount: number; customerPhone?: string; customerLocation?: string };
   loading: boolean;
   error: string;
   onCancel: () => void;
@@ -349,7 +500,6 @@ function RecurringEditForm({
   const [areaName, setAreaName] = useState(initial.areaName ?? "");
   const [hours, setHours] = useState(String(initial.hours));
   const [amount, setAmount] = useState(String(initial.amount));
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(initial.paymentMethod ?? "");
   const [customerPhone, setCustomerPhone] = useState(initial.customerPhone ?? "");
   const [customerLocation, setCustomerLocation] = useState(initial.customerLocation ?? "");
   const [localError, setLocalError] = useState("");
@@ -368,7 +518,6 @@ function RecurringEditForm({
       areaName: trimmedArea,
       hours: hoursNum,
       amount: amountNum,
-      paymentMethod: paymentMethod || null,
       customerPhone,
       customerLocation,
     });
@@ -397,11 +546,6 @@ function RecurringEditForm({
         <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
         <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
       </div>
-      <SelectInput label="طريقة الدفع" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}>
-        <option value="">بدون دفع (غير مدفوع)</option>
-        <option value="benefit">بنفت</option>
-        <option value="cash">نقدي</option>
-      </SelectInput>
       <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
       <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
       <div className="flex gap-3">

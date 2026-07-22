@@ -1,5 +1,5 @@
-import { ApiError, type EditableBookingFields } from "./booking";
-import type { PaymentMethod, RecurringSchedule, Shift } from "./types";
+import { ApiError, type EditableBookingFields, type PaymentPatch } from "./booking";
+import type { RecurringSchedule, Shift } from "./types";
 
 /**
  * Thin client-side wrappers around the recurring-schedule API routes.
@@ -15,9 +15,9 @@ export class InvalidRecurringDayError extends Error {
   }
 }
 
-async function callApi(url: string, body: unknown): Promise<Record<string, unknown>> {
+async function callApi(url: string, body: unknown, method: "POST" | "PATCH" = "POST"): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -37,7 +37,6 @@ export interface CreateRecurringInput {
   dayOfWeek: number;
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   startDate: string;
@@ -73,6 +72,21 @@ export interface CancelRecurringInput {
 
 export async function cancelRecurringOccurrence(input: CancelRecurringInput): Promise<void> {
   await callApi(`/api/recurring/${input.recurring.id}/cancel`, input);
+}
+
+export interface SetRecurringOccurrencePaymentInput {
+  recurring: RecurringSchedule;
+  date: string;
+  payment: PaymentPatch;
+}
+
+/** Manager only — materializes the occurrence into a concrete booking first if needed. */
+export async function setRecurringOccurrencePayment(input: SetRecurringOccurrencePaymentInput): Promise<void> {
+  await callApi(
+    `/api/recurring/${input.recurring.id}/payment`,
+    { recurring: input.recurring, date: input.date, ...input.payment },
+    "PATCH"
+  );
 }
 
 export function availableDaysOfWeek(): { value: number; labelAr: string }[] {

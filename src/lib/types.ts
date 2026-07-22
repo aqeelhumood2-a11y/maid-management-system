@@ -52,6 +52,7 @@ export interface Booking {
   amount: number;
   paymentMethod: PaymentMethod | null;
   paid: boolean;
+  paidAmount: number | null;
   paymentDate: Timestamp | null;
   paymentBy: string | null;
   customerPhone: string;
@@ -81,7 +82,6 @@ export interface RecurringSchedule {
   dayOfWeek: number; // 0=Sunday ... 6=Saturday, 5(Friday) not allowed
   hours: number;
   amount: number;
-  paymentMethod: PaymentMethod | null;
   customerPhone: string;
   customerLocation: string;
   startDate: string; // yyyy-MM-dd, inclusive
@@ -124,6 +124,9 @@ export type ActivityActionType =
   | "booking_edited"
   | "booking_cancelled"
   | "payment_marked_paid"
+  | "payment_reverted"
+  | "payment_method_changed"
+  | "payment_amount_changed"
   | "worker_added"
   | "worker_edited"
   | "worker_activated"

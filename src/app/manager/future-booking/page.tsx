@@ -10,7 +10,7 @@ import { useRecurringExceptions, useRecurringSchedules } from "@/hooks/useRecurr
 import { resolveCell } from "@/lib/availability";
 import { ApiError, createBooking } from "@/lib/booking";
 import { isFriday, todayBahrain } from "@/lib/date";
-import type { PaymentMethod, Shift } from "@/lib/types";
+import type { Shift } from "@/lib/types";
 
 export default function FutureBookingPage() {
   const { workers } = useWorkers();
@@ -24,7 +24,6 @@ export default function FutureBookingPage() {
   const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [error, setError] = useState("");
@@ -48,7 +47,6 @@ export default function FutureBookingPage() {
     setAreaName("");
     setHours("");
     setAmount("");
-    setPaymentMethod("");
     setCustomerPhone("");
     setCustomerLocation("");
     setFridayConfirmed(false);
@@ -82,7 +80,6 @@ export default function FutureBookingPage() {
         areaName: trimmedArea,
         hours: hoursNum,
         amount: amountNum,
-        paymentMethod: paymentMethod || null,
         customerPhone,
         customerLocation,
         source: "manager_future",
@@ -166,12 +163,6 @@ export default function FutureBookingPage() {
           <TextInput label="عدد الساعات" type="number" required min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
           <TextInput label="المبلغ (د.ب)" type="number" required min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
-
-        <SelectInput label="طريقة الدفع" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}>
-          <option value="">بدون دفع (غير مدفوع)</option>
-          <option value="benefit">بنفت</option>
-          <option value="cash">نقدي</option>
-        </SelectInput>
 
         <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
         <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />

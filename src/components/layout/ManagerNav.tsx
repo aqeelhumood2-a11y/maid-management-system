@@ -9,7 +9,7 @@ const ITEMS = [
   { href: "/manager/recurring", label: "الجدول المتكرر" },
   { href: "/manager/routes", label: "خطوط السير" },
   { href: "/manager/reports", label: "التقارير" },
-  { href: "/manager/unpaid", label: "المدفوعات المعلقة" },
+  { href: "/manager/unpaid", label: "المدفوعات" },
   { href: "/manager/activity", label: "سجل النشاط" },
   { href: "/manager/settings", label: "الإعدادات" },
 ];

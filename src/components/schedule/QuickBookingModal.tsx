@@ -3,14 +3,19 @@
 import { useState, type FormEvent } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
-import { TextInput, SelectInput, TextArea } from "@/components/ui/Field";
+import { TextInput, TextArea } from "@/components/ui/Field";
 import { ErrorBanner } from "@/components/ui/Feedback";
 import { ApiError, createBooking } from "@/lib/booking";
 import { formatDateAr, weekdayLabelAr } from "@/lib/date";
-import type { BookingSource, PaymentMethod, Shift, Worker } from "@/lib/types";
+import type { BookingSource, Shift, Worker } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
 
+/**
+ * Payment is never captured here — booking creation stays free of any
+ * payment concept at all. It's recorded later, exclusively from the
+ * manager-only payment controls (see BookingDetailsModal).
+ */
 export function QuickBookingModal({
   open,
   onClose,
@@ -31,7 +36,6 @@ export function QuickBookingModal({
   const [areaName, setAreaName] = useState("");
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [error, setError] = useState("");
@@ -41,7 +45,6 @@ export function QuickBookingModal({
     setAreaName("");
     setHours("");
     setAmount("");
-    setPaymentMethod("");
     setCustomerPhone("");
     setCustomerLocation("");
     setError("");
@@ -78,7 +81,6 @@ export function QuickBookingModal({
         areaName: trimmedArea,
         hours: hoursNum,
         amount: amountNum,
-        paymentMethod: paymentMethod || null,
         customerPhone,
         customerLocation,
         source,
@@ -142,16 +144,6 @@ export function QuickBookingModal({
             onChange={(e) => setAmount(e.target.value)}
           />
         </div>
-
-        <SelectInput
-          label="طريقة الدفع"
-          value={paymentMethod}
-          onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}
-        >
-          <option value="">بدون دفع (غير مدفوع)</option>
-          <option value="benefit">بنفت</option>
-          <option value="cash">نقدي</option>
-        </SelectInput>
 
         <TextInput
           label="هاتف العميل"

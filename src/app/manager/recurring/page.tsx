@@ -17,10 +17,9 @@ import {
   type RecurringCancelScope,
   type RecurringEditScope,
 } from "@/lib/recurring";
-import type { PaymentMethod, RecurringSchedule, Shift } from "@/lib/types";
+import type { RecurringSchedule, Shift } from "@/lib/types";
 
 const SHIFT_LABEL: Record<Shift, string> = { morning: "صباحي", afternoon: "مسائي" };
-const PAYMENT_LABEL: Record<string, string> = { benefit: "بنفت", cash: "نقدي" };
 
 export default function RecurringPage() {
   const { schedules, loading } = useRecurringSchedules();
@@ -47,8 +46,10 @@ export default function RecurringPage() {
                     {s.workerName} — {weekdayLabelAr(nextIsoForDow(s.dayOfWeek))} · {SHIFT_LABEL[s.shift]}
                   </p>
                   <p className="text-sm text-slate-500">
-                    {s.areaName} · {s.hours} ساعة · {s.amount} د.ب ·{" "}
-                    {s.paymentMethod ? PAYMENT_LABEL[s.paymentMethod] : "غير مدفوع"}
+                    {s.areaName} · {s.hours} ساعة · {s.amount} د.ب
+                  </p>
+                  <p className="text-xs text-slate-400">
+                    الدفع يُدار بشكل مستقل لكل موعد من جدول اليوم/الأسبوع
                   </p>
                   <p className="text-xs text-slate-400">
                     من {s.startDate} {s.endDate ? `إلى ${s.endDate}` : "(مستمر)"}
@@ -99,7 +100,6 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
   const [day, setDay] = useState(days[0].value);
   const [hours, setHours] = useState("");
   const [amount, setAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [startDate, setStartDate] = useState(todayBahrain());
@@ -129,7 +129,6 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
         dayOfWeek: day,
         hours: hoursNum,
         amount: amountNum,
-        paymentMethod: paymentMethod || null,
         customerPhone,
         customerLocation,
         startDate,
@@ -179,11 +178,6 @@ function AddRecurringModal({ onClose }: { onClose: () => void }) {
           <TextInput label="عدد الساعات" type="number" required min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
           <TextInput label="المبلغ (د.ب)" type="number" required min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
-        <SelectInput label="طريقة الدفع" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}>
-          <option value="">بدون دفع (غير مدفوع)</option>
-          <option value="benefit">بنفت</option>
-          <option value="cash">نقدي</option>
-        </SelectInput>
         <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
         <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
         <Button type="submit" fullWidth loading={loading}>
@@ -206,7 +200,6 @@ function EditRecurringModal({
   const [areaName, setAreaName] = useState(recurring.areaName);
   const [hours, setHours] = useState(String(recurring.hours));
   const [amount, setAmount] = useState(String(recurring.amount));
-  const [paymentMethod, setPaymentMethod] = useState<"" | PaymentMethod>(recurring.paymentMethod ?? "");
   const [customerPhone, setCustomerPhone] = useState(recurring.customerPhone);
   const [customerLocation, setCustomerLocation] = useState(recurring.customerLocation);
   const [error, setError] = useState("");
@@ -236,7 +229,6 @@ function EditRecurringModal({
           areaName: trimmedArea,
           hours: hoursNum,
           amount: amountNum,
-          paymentMethod: paymentMethod || null,
           customerPhone,
           customerLocation,
         },
@@ -284,11 +276,6 @@ function EditRecurringModal({
           <TextInput label="عدد الساعات" type="number" min="0.5" step="0.5" value={hours} onChange={(e) => setHours(e.target.value)} />
           <TextInput label="المبلغ (د.ب)" type="number" min="0" step="0.001" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </div>
-        <SelectInput label="طريقة الدفع" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as "" | PaymentMethod)}>
-          <option value="">بدون دفع (غير مدفوع)</option>
-          <option value="benefit">بنفت</option>
-          <option value="cash">نقدي</option>
-        </SelectInput>
         <TextInput label="هاتف العميل" type="tel" dir="ltr" className="text-right" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} />
         <TextArea label="موقع العميل" value={customerLocation} onChange={(e) => setCustomerLocation(e.target.value)} />
         <Button type="submit" fullWidth loading={loading}>

@@ -3,6 +3,7 @@
 import { Fragment } from "react";
 import { resolveCell } from "@/lib/availability";
 import { formatDateShortAr, todayBahrain, weekdayLabelAr } from "@/lib/date";
+import { useManagerSession } from "@/context/ManagerSessionContext";
 import type {
   Booking,
   CellResolution,
@@ -58,6 +59,7 @@ export function ScheduleTable({
 }) {
   const today = todayBahrain();
   const multiDay = dates.length > 1;
+  const { isManager } = useManagerSession();
 
   return (
     <div className="overflow-x-auto rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -124,6 +126,7 @@ export function ScheduleTable({
                         exceptions
                       );
                       const clickable = resolution.status === "available" || resolution.status === "booked";
+                      const isPaid = resolution.status === "booked" && (resolution.booking?.paid ?? false);
                       return (
                         <td
                           key={`${date}-${shift}`}
@@ -134,9 +137,17 @@ export function ScheduleTable({
                             disabled={!clickable}
                             onClick={() => clickable && onCellClick(worker, date, shift, resolution)}
                             title={cellLabel(resolution)}
-                            className={`flex h-11 w-full min-w-16 items-center justify-center truncate rounded-lg px-1.5 text-xs font-medium transition-colors ${CELL_STYLES[resolution.status]}`}
+                            className={`relative flex h-11 w-full min-w-16 items-center justify-center truncate rounded-lg px-1.5 text-xs font-medium transition-colors ${CELL_STYLES[resolution.status]}`}
                           >
                             {cellLabel(resolution)}
+                            {isManager && resolution.status === "booked" && (
+                              <span
+                                title={isPaid ? "مدفوع" : "غير مدفوع"}
+                                className={`absolute -top-1 -left-1 h-2.5 w-2.5 rounded-full ring-2 ring-white ${
+                                  isPaid ? "bg-emerald-600" : "bg-amber-500"
+                                }`}
+                              />
+                            )}
                           </button>
                         </td>
                       );

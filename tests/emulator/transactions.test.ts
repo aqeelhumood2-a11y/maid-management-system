@@ -6,8 +6,8 @@ import {
   createBookingServer,
   cancelBookingServer,
   FridayRestrictedError,
-  markBookingPaidServer,
   ServiceError,
+  updateBookingPaymentServer,
   updateBookingServer,
   type Actor,
 } from "@/lib/server/bookingService";
@@ -15,6 +15,7 @@ import {
   cancelRecurringOccurrenceServer,
   createRecurringScheduleServer,
   editRecurringOccurrenceServer,
+  setRecurringOccurrencePaymentServer,
 } from "@/lib/server/recurringService";
 import { resolveCell } from "@/lib/availability";
 import { addDaysToDateStr, todayBahrain } from "@/lib/date";
@@ -68,7 +69,6 @@ const BASE_INPUT = {
   areaName: "المنامة",
   hours: 4,
   amount: 12,
-  paymentMethod: null,
   customerPhone: "36000000",
   customerLocation: "قريب من السوق",
   source: "today" as const,
@@ -129,7 +129,6 @@ describe("updateBookingServer — moving a booking into Friday", () => {
           areaName: BASE_INPUT.areaName,
           hours: BASE_INPUT.hours,
           amount: BASE_INPUT.amount,
-          paymentMethod: null,
           customerPhone: BASE_INPUT.customerPhone,
           customerLocation: BASE_INPUT.customerLocation,
           date: FRIDAY_DATE,
@@ -156,7 +155,6 @@ describe("updateBookingServer — moving a booking into Friday", () => {
         areaName: BASE_INPUT.areaName,
         hours: BASE_INPUT.hours,
         amount: BASE_INPUT.amount,
-        paymentMethod: null,
         customerPhone: BASE_INPUT.customerPhone,
         customerLocation: BASE_INPUT.customerLocation,
         date: FRIDAY_DATE,
@@ -180,7 +178,6 @@ describe("updateBookingServer — moving a booking into Friday", () => {
         areaName: "الرفاع",
         hours: 6,
         amount: 18,
-        paymentMethod: "cash",
         customerPhone: BASE_INPUT.customerPhone,
         customerLocation: BASE_INPUT.customerLocation,
       },
@@ -258,20 +255,197 @@ describe("cancelBookingServer — releases availability", () => {
   });
 });
 
-describe("markBookingPaidServer — unpaid to paid transition", () => {
-  it("records who marked the booking paid and removes it from the unpaid set", async () => {
+describe("updateBookingPaymentServer — payment lifecycle", () => {
+  it("defaults a new booking to unpaid with null payment fields", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.paid).toBe(false);
+    expect(snap.data()?.paymentMethod).toBeNull();
+    expect(snap.data()?.paidAmount).toBeNull();
+    expect(snap.data()?.paymentDate).toBeNull();
+    expect(snap.data()?.paymentBy).toBeNull();
+  });
+
+  it("records who marked the booking paid, the amount, and an auto payment date", async () => {
     await clearCollections();
     const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
 
     let unpaid = await db.collection("bookings").where("paid", "==", false).get();
     expect(unpaid.size).toBe(1);
 
-    await markBookingPaidServer(db, id, { paymentMethod: "benefit" }, MANAGER);
+    await updateBookingPaymentServer(
+      db,
+      id,
+      { isPaid: true, paymentMethod: "benefit", paidAmount: 12 },
+      MANAGER
+    );
 
     unpaid = await db.collection("bookings").where("paid", "==", false).get();
     expect(unpaid.size).toBe(0);
     const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.paid).toBe(true);
+    expect(snap.data()?.paymentMethod).toBe("benefit");
+    expect(snap.data()?.paidAmount).toBe(12);
     expect(snap.data()?.paymentBy).toBe(MANAGER.uid);
+    expect(snap.data()?.paymentDate).not.toBeNull();
+  });
+
+  it("rejects marking paid without a payment method", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await expect(
+      updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: null, paidAmount: 12 }, MANAGER)
+    ).rejects.toThrow(ServiceError);
+  });
+
+  it("rejects a negative paid amount", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await expect(
+      updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "cash", paidAmount: -5 }, MANAGER)
+    ).rejects.toThrow(ServiceError);
+  });
+
+  it("rejects a non-manager from touching payment at all", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await expect(
+      updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "cash", paidAmount: 12 }, EMPLOYEE)
+    ).rejects.toThrow(ServiceError);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.paid).toBe(false);
+  });
+
+  it("keeps the original payment date when only the method or amount changes", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "cash", paidAmount: 12 }, MANAGER);
+    const firstSnap = await db.collection("bookings").doc(id).get();
+    const firstPaymentDate = firstSnap.data()?.paymentDate;
+
+    await updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "benefit", paidAmount: 15 }, MANAGER);
+    const secondSnap = await db.collection("bookings").doc(id).get();
+    expect(secondSnap.data()?.paymentMethod).toBe("benefit");
+    expect(secondSnap.data()?.paidAmount).toBe(15);
+    expect(secondSnap.data()?.paymentDate).toEqual(firstPaymentDate);
+  });
+
+  it("clears payment method, amount, and payment date when reverted to unpaid", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+    await updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "cash", paidAmount: 12 }, MANAGER);
+
+    await updateBookingPaymentServer(db, id, { isPaid: false, paymentMethod: null, paidAmount: null }, MANAGER);
+    const snap = await db.collection("bookings").doc(id).get();
+    expect(snap.data()?.paid).toBe(false);
+    expect(snap.data()?.paymentMethod).toBeNull();
+    expect(snap.data()?.paidAmount).toBeNull();
+    expect(snap.data()?.paymentDate).toBeNull();
+  });
+
+  it("logs payment_marked_paid, payment_method_changed, payment_amount_changed, and payment_reverted", async () => {
+    await clearCollections();
+    const id = await createBookingServer(db, { ...BASE_INPUT, date: WEEKDAY_DATE }, EMPLOYEE);
+
+    await updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "cash", paidAmount: 12 }, MANAGER);
+    await updateBookingPaymentServer(db, id, { isPaid: true, paymentMethod: "benefit", paidAmount: 20 }, MANAGER);
+    await updateBookingPaymentServer(db, id, { isPaid: false, paymentMethod: null, paidAmount: null }, MANAGER);
+
+    const logsSnap = await db.collection("activityLogs").where("entityId", "==", id).get();
+    const types = logsSnap.docs.map((d) => d.data().type as string).sort();
+    expect(types).toEqual(
+      [
+        "booking_created",
+        "payment_amount_changed",
+        "payment_marked_paid",
+        "payment_method_changed",
+        "payment_reverted",
+      ].sort()
+    );
+  });
+});
+
+describe("setRecurringOccurrencePaymentServer — per-occurrence independence", () => {
+  it("paying one occurrence does not mark a future occurrence of the same series as paid", async () => {
+    await clearCollections();
+    const recurringId = await createRecurringScheduleServer(
+      db,
+      {
+        workerId: "w1",
+        workerName: "سارة",
+        areaId: "a1",
+        areaName: "المنامة",
+        shift: "morning",
+        dayOfWeek: 3,
+        hours: 4,
+        amount: 12,
+        customerPhone: "",
+        customerLocation: "",
+        startDate: "2026-07-01",
+      },
+      MANAGER
+    );
+    const scheduleSnap = await db.collection("recurringSchedules").doc(recurringId).get();
+    const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
+
+    await setRecurringOccurrencePaymentServer(
+      db,
+      {
+        recurring: schedule,
+        date: "2026-08-05", // a Wednesday matching the pattern
+        payment: { isPaid: true, paymentMethod: "cash", paidAmount: 12 },
+      },
+      MANAGER
+    );
+
+    const paidOccurrence = await db
+      .collection("bookings")
+      .where("recurringSeriesId", "==", recurringId)
+      .where("date", "==", "2026-08-05")
+      .get();
+    expect(paidOccurrence.docs[0].data().paid).toBe(true);
+
+    // The next week's occurrence is not yet materialized at all, and remains
+    // unpaid by construction — paying one occurrence must never create or
+    // affect any document for another date.
+    const nextWeekOccurrence = await db
+      .collection("bookings")
+      .where("recurringSeriesId", "==", recurringId)
+      .where("date", "==", "2026-08-12")
+      .get();
+    expect(nextWeekOccurrence.empty).toBe(true);
+  });
+
+  it("rejects a non-manager from setting recurring-occurrence payment", async () => {
+    await clearCollections();
+    const recurringId = await createRecurringScheduleServer(
+      db,
+      {
+        workerId: "w1",
+        workerName: "سارة",
+        areaId: "a1",
+        areaName: "المنامة",
+        shift: "morning",
+        dayOfWeek: 3,
+        hours: 4,
+        amount: 12,
+        customerPhone: "",
+        customerLocation: "",
+        startDate: "2026-07-01",
+      },
+      MANAGER
+    );
+    const scheduleSnap = await db.collection("recurringSchedules").doc(recurringId).get();
+    const schedule = { id: recurringId, ...scheduleSnap.data() } as RecurringSchedule;
+
+    await expect(
+      setRecurringOccurrencePaymentServer(
+        db,
+        { recurring: schedule, date: "2026-08-05", payment: { isPaid: true, paymentMethod: "cash", paidAmount: 12 } },
+        EMPLOYEE
+      )
+    ).rejects.toThrow(ServiceError);
   });
 });
 
@@ -290,7 +464,6 @@ describe("recurring schedules — server-side materialization and future availab
           dayOfWeek: 3,
           hours: 4,
           amount: 12,
-          paymentMethod: null,
           customerPhone: "",
           customerLocation: "",
           startDate: todayBahrain(),
@@ -314,7 +487,6 @@ describe("recurring schedules — server-side materialization and future availab
         dayOfWeek: 3, // Wednesday
         hours: 4,
         amount: 12,
-        paymentMethod: null,
         customerPhone: "",
         customerLocation: "",
         startDate: today,
@@ -360,7 +532,6 @@ describe("recurring schedules — server-side materialization and future availab
         dayOfWeek: 3,
         hours: 4,
         amount: 12,
-        paymentMethod: null,
         customerPhone: "",
         customerLocation: "",
         startDate: "2026-07-01",
@@ -381,7 +552,6 @@ describe("recurring schedules — server-side materialization and future availab
           areaName: "الرفاع",
           hours: 5,
           amount: 15,
-          paymentMethod: "cash",
           customerPhone: "",
           customerLocation: "",
         },
@@ -410,7 +580,6 @@ describe("recurring schedules — server-side materialization and future availab
         dayOfWeek: 3,
         hours: 4,
         amount: 12,
-        paymentMethod: null,
         customerPhone: "",
         customerLocation: "",
         startDate: "2026-07-01",
