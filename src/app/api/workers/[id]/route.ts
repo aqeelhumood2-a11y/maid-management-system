@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getActor, isManagerSession } from "@/lib/auth/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { updateWorkerServer, type WorkerPatch } from "@/lib/server/catalogService";
+import { deleteWorkerServer, updateWorkerServer, type WorkerPatch } from "@/lib/server/catalogService";
 import { ServiceError } from "@/lib/server/errors";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -20,5 +20,24 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
     }
     return NextResponse.json({ error: "تعذر حفظ التعديل" }, { status: 500 });
+  }
+}
+
+/** Permanent deletion — manager only. Historical bookings/recurring schedules are never touched; see deleteWorkerServer. */
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  if (!(await isManagerSession())) {
+    return NextResponse.json({ error: "هذا الإجراء متاح للمدير فقط" }, { status: 401 });
+  }
+
+  const { id } = await context.params;
+
+  try {
+    await deleteWorkerServer(getAdminDb(), id, await getActor());
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
+    }
+    return NextResponse.json({ error: "تعذر حذف العاملة" }, { status: 500 });
   }
 }

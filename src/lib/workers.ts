@@ -6,11 +6,15 @@ import { ApiError } from "./booking";
  * by the manager session cookie.
  */
 
-async function callApi(url: string, method: "POST" | "PATCH", body: unknown): Promise<Record<string, unknown>> {
+async function callApi(
+  url: string,
+  method: "POST" | "PATCH" | "DELETE",
+  body: unknown
+): Promise<Record<string, unknown>> {
   const res = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string; [key: string]: unknown };
   if (!res.ok) {
@@ -30,6 +34,11 @@ export async function updateWorker(workerId: string, patch: { name: string; phon
 
 export async function setWorkerActive(workerId: string, active: boolean): Promise<void> {
   await callApi(`/api/workers/${workerId}`, "PATCH", { active });
+}
+
+/** Permanent deletion — the worker document is removed from Firestore entirely. Historical bookings/recurring schedules are never touched. */
+export async function deleteWorker(workerId: string): Promise<void> {
+  await callApi(`/api/workers/${workerId}`, "DELETE", undefined);
 }
 
 export interface WorkerImpact {

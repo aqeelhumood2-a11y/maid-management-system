@@ -157,6 +157,7 @@ export type ActivityActionType =
   | "worker_edited"
   | "worker_activated"
   | "worker_deactivated"
+  | "worker_deleted"
   | "recurring_created"
   | "recurring_edited"
   | "recurring_cancelled"

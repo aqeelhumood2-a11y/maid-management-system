@@ -26,6 +26,7 @@ const TYPE_LABELS: Record<ActivityActionType, string> = {
   worker_edited: "تعديل بيانات عاملة",
   worker_activated: "تفعيل عاملة",
   worker_deactivated: "إيقاف عاملة",
+  worker_deleted: "حذف عاملة نهائيًا",
   recurring_created: "إنشاء موعد متكرر",
   recurring_edited: "تعديل موعد متكرر",
   recurring_cancelled: "إلغاء موعد متكرر",

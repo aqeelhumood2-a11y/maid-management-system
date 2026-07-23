@@ -7,7 +7,14 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { TextInput } from "@/components/ui/Field";
 import { Badge, ErrorBanner, SuccessBanner, Spinner } from "@/components/ui/Feedback";
 import { useWorkers } from "@/hooks/useWorkers";
-import { createWorker, getWorkerImpact, setWorkerActive, updateWorker, type WorkerImpact } from "@/lib/workers";
+import {
+  createWorker,
+  deleteWorker,
+  getWorkerImpact,
+  setWorkerActive,
+  updateWorker,
+  type WorkerImpact,
+} from "@/lib/workers";
 import type { Worker } from "@/lib/types";
 
 export default function WorkersPage() {
@@ -54,11 +61,9 @@ export default function WorkersPage() {
                   <Button size="sm" variant={w.active ? "danger" : "primary"} onClick={() => setToggling(w)}>
                     {w.active ? "إيقاف" : "تفعيل"}
                   </Button>
-                  {w.active && (
-                    <Button size="sm" variant="danger" onClick={() => setDeleting(w)}>
-                      حذف العاملة
-                    </Button>
-                  )}
+                  <Button size="sm" variant="danger" onClick={() => setDeleting(w)}>
+                    حذف العاملة
+                  </Button>
                 </div>
               </li>
             ))}
@@ -97,7 +102,7 @@ export default function WorkersPage() {
           onDeleted={async (name) => {
             setDeleting(null);
             await refetch();
-            setSuccessMessage(`تم حذف العاملة "${name}" بنجاح`);
+            setSuccessMessage(`تم حذف العاملة "${name}" نهائيًا بنجاح`);
           }}
         />
       )}
@@ -108,11 +113,11 @@ export default function WorkersPage() {
 /**
  * Two-step destructive confirmation, kept separate from ConfirmDialog since
  * it needs a future-commitments warning and an inline error state that the
- * shared single-message ConfirmDialog doesn't support. Deletion is a soft
- * deactivation (same underlying setWorkerActive(false) as the existing
- * إيقاف action) — historical bookings, payments and activity logs are never
- * touched, and the worker is simply excluded from future booking/recurring
- * selection.
+ * shared single-message ConfirmDialog doesn't support. Deletion here is
+ * PERMANENT — the worker document is removed from Firestore entirely (see
+ * deleteWorkerServer). Historical bookings/recurring schedules keep their
+ * own denormalized worker name and are never touched; the worker is simply
+ * gone from every list that reads the workers collection going forward.
  */
 function DeleteWorkerFlow({
   worker,
@@ -152,7 +157,7 @@ function DeleteWorkerFlow({
     setLoading(true);
     setError("");
     try {
-      await setWorkerActive(worker.id, false);
+      await deleteWorker(worker.id);
       onDeleted(worker.name);
     } catch {
       setError("تعذر حذف العاملة، حاول مرة أخرى");
@@ -162,14 +167,14 @@ function DeleteWorkerFlow({
   }
 
   return (
-    <Modal open onClose={onClose} title={step === 1 ? "حذف العاملة" : "تأكيد الحذف النهائي"}>
+    <Modal open onClose={onClose} title={step === 1 ? "حذف العاملة نهائيًا" : "تأكيد الحذف النهائي"}>
       <div className="space-y-4">
         {step === 1 ? (
           <>
-            <p className="text-slate-700">{`هل أنت متأكد من حذف العاملة ${worker.name}؟`}</p>
+            <p className="text-slate-700">{`هل أنت متأكد من حذف العاملة ${worker.name} نهائيًا؟`}</p>
             <p className="text-sm text-slate-500">
-              سيتم إيقاف العاملة فوراً ولن تظهر عند إنشاء حجوزات أو جداول متكررة جديدة، وتبقى جميع حجوزاتها وسجلاتها
-              التاريخية محفوظة كما هي.
+              سيتم حذف بيانات العاملة نهائيًا من النظام ولن تظهر في أي قائمة اختيار جديدة. تبقى حجوزاتها وسجلاتها
+              التاريخية محفوظة باسمها كما هي.
             </p>
             {impactLoading && (
               <p className="text-sm text-slate-500">جارٍ التحقق من الحجوزات والجداول المستقبلية...</p>
@@ -177,15 +182,13 @@ function DeleteWorkerFlow({
             {!impactLoading && hasFutureCommitments && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 تنبيه: لدى هذه العاملة {impact!.futureBookings} حجز مستقبلي و{impact!.activeRecurringSchedules} جدول
-                متكرر نشط. لن يتم حذف أو إلغاء هذه الحجوزات أو الجداول تلقائياً، ويجب على المدير إعادة تعيينها
-                يدوياً.
+                متكرر نشط. لن يتم حذف أو إلغاء هذه الحجوزات أو الجداول تلقائياً، لكنها ستبقى بعاملة محذوفة ويجب على
+                المدير إعادة تعيينها يدوياً.
               </div>
             )}
           </>
         ) : (
-          <p className="text-slate-700">
-            {`هذا الإجراء نهائي ولا يمكن التراجع عنه بسهولة. هل تريد تأكيد حذف العاملة ${worker.name}؟`}
-          </p>
+          <p className="text-slate-700">سيتم حذف العاملة نهائيًا ولا يمكن التراجع. هل تريد المتابعة؟</p>
         )}
         <ErrorBanner message={error} />
         <div className="flex gap-3">
@@ -199,7 +202,7 @@ function DeleteWorkerFlow({
             disabled={step === 1 && impactLoading}
             onClick={step === 1 ? () => setStep(2) : handleConfirmDelete}
           >
-            {step === 1 ? "متابعة" : "تأكيد الحذف النهائي"}
+            {step === 1 ? "متابعة" : "حذف نهائيًا"}
           </Button>
         </div>
       </div>

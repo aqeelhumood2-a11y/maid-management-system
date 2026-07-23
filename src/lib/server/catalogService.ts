@@ -194,6 +194,36 @@ export async function updateWorkerServer(
   await batch.commit();
 }
 
+/**
+ * Permanent deletion — the worker document is removed from Firestore
+ * entirely (no soft-delete/active flag involved). Bookings, recurring
+ * schedules and route orders already carry their own denormalized
+ * `workerName` set at creation time, so historical records keep showing the
+ * correct name with no dependency on the worker document continuing to
+ * exist, and are never touched here. The audit log entry is written in the
+ * same batch as the delete so it's atomic with it, and — being a separate
+ * document in `activityLogs` — survives the worker document's deletion.
+ */
+export async function deleteWorkerServer(db: Firestore, workerId: string, actor: Actor): Promise<void> {
+  requireManager(actor);
+  const ref = db.collection("workers").doc(workerId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new ServiceError("العاملة غير موجودة", "NOT_FOUND", 404);
+  const before = snap.data()!;
+
+  const batch = db.batch();
+  logActivity(db, batch, {
+    type: "worker_deleted",
+    entityType: "worker",
+    entityId: workerId,
+    actor,
+    before,
+    after: null,
+  });
+  batch.delete(ref);
+  await batch.commit();
+}
+
 export interface WorkerFutureCommitments {
   futureBookings: number;
   activeRecurringSchedules: number;
