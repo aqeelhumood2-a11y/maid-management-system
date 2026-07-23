@@ -31,3 +31,19 @@ export async function updateWorker(workerId: string, patch: { name: string; phon
 export async function setWorkerActive(workerId: string, active: boolean): Promise<void> {
   await callApi(`/api/workers/${workerId}`, "PATCH", { active });
 }
+
+export interface WorkerImpact {
+  futureBookings: number;
+  activeRecurringSchedules: number;
+}
+
+/** Used before deactivating a worker, to warn the manager if it would affect future operations. */
+export async function getWorkerImpact(workerId: string): Promise<WorkerImpact> {
+  const res = await fetch(`/api/workers/${workerId}/impact`);
+  const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string } & Partial<WorkerImpact>;
+  if (!res.ok) throw new ApiError(data.error || "حدث خطأ غير متوقع", data.code || "UNKNOWN");
+  return {
+    futureBookings: data.futureBookings ?? 0,
+    activeRecurringSchedules: data.activeRecurringSchedules ?? 0,
+  };
+}

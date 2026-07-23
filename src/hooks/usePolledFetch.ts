@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type DependencyList } from "react";
+import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
 
 /**
  * Every page mounts several of these hooks at once (workers, bookings,
@@ -31,28 +31,30 @@ export function usePolledFetch<T>(
   fetchFn: () => Promise<T>,
   deps: DependencyList,
   intervalMs: number = DEFAULT_INTERVAL_MS
-): { data: T | undefined; loading: boolean } {
+): { data: T | undefined; loading: boolean; refetch: () => Promise<void> } {
   const [data, setData] = useState<T | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const fetchRef = useRef(fetchFn);
+  const activeRef = useRef(true);
   useEffect(() => {
     fetchRef.current = fetchFn;
   });
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const result = await fetchRef.current();
-        if (!cancelled) setData(result);
-      } catch {
-        // Keep showing the last known-good data on a transient network error.
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  // Stable across renders so callers (e.g. a delete action) can trigger an
+  // immediate re-fetch instead of waiting for the next poll tick.
+  const load = useCallback(async () => {
+    try {
+      const result = await fetchRef.current();
+      if (activeRef.current) setData(result);
+    } catch {
+      // Keep showing the last known-good data on a transient network error.
+    } finally {
+      if (activeRef.current) setLoading(false);
     }
+  }, []);
 
+  useEffect(() => {
+    activeRef.current = true;
     load();
 
     // A background tab (staff leaving the schedule open all day) must not
@@ -81,12 +83,12 @@ export function usePolledFetch<T>(
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      cancelled = true;
+      activeRef.current = false;
       stopTimer();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  return { data, loading };
+  return { data, loading, refetch: load };
 }

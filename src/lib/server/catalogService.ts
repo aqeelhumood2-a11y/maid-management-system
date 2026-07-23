@@ -194,6 +194,49 @@ export async function updateWorkerServer(
   await batch.commit();
 }
 
+export interface WorkerFutureCommitments {
+  futureBookings: number;
+  activeRecurringSchedules: number;
+}
+
+/**
+ * Cheap, read-only check for whether deactivating a worker would affect any
+ * future operational use — used to warn a manager before they confirm a
+ * deactivation. Uses count() aggregation for bookings (matches the existing
+ * (workerId, status, date) composite index, so no new index is needed) and
+ * fetches recurringSchedules by workerId alone (already single-field
+ * indexed), filtering status in memory to avoid requiring a new composite
+ * index for a one-off check.
+ */
+export async function getWorkerFutureCommitmentsServer(
+  db: Firestore,
+  workerId: string,
+  fromDate: string,
+  actor: Actor
+): Promise<WorkerFutureCommitments> {
+  requireManager(actor);
+
+  const [bookingsCountSnap, recurringSnap] = await Promise.all([
+    db
+      .collection("bookings")
+      .where("workerId", "==", workerId)
+      .where("status", "==", "active")
+      .where("date", ">=", fromDate)
+      .count()
+      .get(),
+    db.collection("recurringSchedules").where("workerId", "==", workerId).get(),
+  ]);
+
+  const activeRecurringSchedules = recurringSnap.docs.filter(
+    (d) => d.data().status === "active"
+  ).length;
+
+  return {
+    futureBookings: bookingsCountSnap.data().count,
+    activeRecurringSchedules,
+  };
+}
+
 // ---------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------
